@@ -15,7 +15,7 @@ The simulator implements the Vogler-Hoffmeyer reflection coefficient model from 
 
 ## Features
 
-### Implemented (Phases 1-2)
+### Implemented (Phases 1-3)
 
 - **Vogler-Hoffmeyer IPM Core**
   - Complex gamma function computation for reflection coefficient R(ω)
@@ -33,6 +33,34 @@ The simulator implements the Vogler-Hoffmeyer reflection coefficient model from 
   - Overlap-save convolution for continuous streaming
   - 4096-point FFT blocks with configurable overlap
   - Support for up to 2 Msps complex sample rates
+
+- **Watterson Tapped Delay Line Model**
+  - Classic Watterson HF channel model
+  - Multiple taps with configurable delays and amplitudes
+  - Independent Rayleigh/Rician fading per tap
+  - Gaussian, flat, and Jakes Doppler spectrum shapes
+  - CCIR Good/Moderate/Poor presets
+
+- **Noise Injection**
+  - AWGN (Additive White Gaussian Noise)
+  - Atmospheric noise per ITU-R P.372
+  - Man-made noise (city, residential, rural environments)
+  - Impulse noise (lightning, switching transients)
+  - Configurable SNR and noise bandwidth
+
+- **Signal Impairments**
+  - AGC (Automatic Gain Control) with slow/medium/fast/manual modes
+  - Attack/release dynamics with hang AGC
+  - Signal limiting (hard, soft, cubic modes)
+  - Frequency offset and drift simulation
+  - Phase noise modeling
+  - Impairment chain for combined effects
+
+- **Channel Recording & Playback**
+  - Record time-varying channel states
+  - Save in NPZ, HDF5, or JSON formats
+  - Playback with interpolation
+  - Reproducible testing scenarios
 
 - **PyQt6 Dashboard**
   - Channel frequency response |H(f)| display
@@ -60,7 +88,6 @@ The simulator implements the Vogler-Hoffmeyer reflection coefficient model from 
 
 ### Planned (Future Phases)
 
-- **Phase 3**: Watterson model comparison, noise injection, AGC simulation
 - **Phase 4**: Full ray tracing, oblique incidence geometry
 - **Phase 5**: Real-time IQ output, GNU Radio integration
 
@@ -153,6 +180,119 @@ while True:
     # ... do something with output
 ```
 
+### Watterson Channel Model
+
+```python
+from hfpathsim.core.watterson import WattersonChannel, WattersonConfig
+from hfpathsim.core.parameters import ITUCondition
+import numpy as np
+
+# Create channel from ITU condition preset
+config = WattersonConfig.from_itu_condition(ITUCondition.MODERATE)
+channel = WattersonChannel(config, seed=42)
+
+# Or use CCIR presets
+config = WattersonConfig.ccir_poor()  # 2ms delay, 1Hz Doppler
+channel = WattersonChannel(config)
+
+# Process signal
+input_signal = np.random.randn(4096).astype(np.complex64)
+output = channel.process_block(input_signal)
+
+# Get impulse response for visualization
+h = channel.get_impulse_response(length=256)
+```
+
+### Noise Injection
+
+```python
+from hfpathsim.core.noise import NoiseGenerator, NoiseConfig, ManMadeEnvironment
+import numpy as np
+
+# Configure noise sources
+config = NoiseConfig(
+    snr_db=15.0,
+    enable_atmospheric=True,
+    frequency_mhz=7.0,  # 40m band
+    season="summer",
+    time_of_day="night",
+    enable_manmade=True,
+    environment=ManMadeEnvironment.RESIDENTIAL,
+    enable_impulse=True,
+    impulse_rate_hz=5.0,
+)
+
+noise_gen = NoiseGenerator(config, seed=42)
+
+# Add noise to signal
+signal = np.ones(10000, dtype=np.complex64)
+noisy_signal = noise_gen.add_noise(signal, normalize=True)
+```
+
+### AGC and Impairments
+
+```python
+from hfpathsim.core.impairments import (
+    AGC, AGCConfig, AGCMode,
+    Limiter, LimiterConfig,
+    FrequencyOffset, FrequencyOffsetConfig,
+    ImpairmentChain,
+)
+from hfpathsim.core.noise import NoiseGenerator, NoiseConfig
+
+# Create AGC
+agc = AGC(AGCConfig(
+    mode=AGCMode.FAST,
+    target_level_db=-10.0,
+    max_gain_db=40.0,
+))
+
+# Create limiter
+limiter = Limiter(LimiterConfig(
+    threshold_db=-3.0,
+    mode="soft",
+))
+
+# Create frequency offset
+freq_offset = FrequencyOffset(FrequencyOffsetConfig(
+    offset_hz=25.0,
+    drift_rate_hz_per_sec=0.5,
+))
+
+# Combine in impairment chain
+chain = ImpairmentChain(
+    agc=agc,
+    limiter=limiter,
+    freq_offset=freq_offset,
+    noise_generator=NoiseGenerator(NoiseConfig(snr_db=20.0)),
+)
+
+# Process signal through entire chain
+output = chain.process(input_signal)
+print(chain.get_status())  # {'agc_gain_db': 15.2, 'limiter_gr_db': -1.5, ...}
+```
+
+### Channel Recording and Playback
+
+```python
+from hfpathsim.core.recording import ChannelPlayer, create_test_recording
+
+# Create synthetic test recording
+player = create_test_recording(
+    duration_sec=10.0,
+    snapshot_rate_hz=10.0,
+    condition="moderate",
+)
+
+# Iterate through recorded channel states
+for H in player.iterate(rate_hz=20.0, loop=False):
+    # Apply H to your signal: Y = X * H in frequency domain
+    pass
+
+# Get channel state at specific time
+H = player.get_at_time(5.0, interpolate=True)
+```
+
 ## Project Structure
 
 ```
@@ -167,7 +307,11 @@ hfpathsim/
 │   ├── core/                   # Core simulation
 │   │   ├── parameters.py       # VoglerParameters, ITUCondition
 │   │   ├── channel.py          # HFChannel class
-│   │   └── vogler_ipm.py       # Vogler model interface
+│   │   ├── vogler_ipm.py       # Vogler model interface
+│   │   ├── watterson.py        # Watterson TDL model
+│   │   ├── noise.py            # Noise generators (AWGN, atmospheric, etc.)
+│   │   ├── impairments.py      # AGC, limiter, frequency offset
+│   │   └── recording.py        # Channel state recording/playback
 │   │
 │   ├── gpu/                    # GPU acceleration
 │   │   ├── __init__.py         # Python interface
@@ -202,7 +346,8 @@ hfpathsim/
 ├── tests/
 │   ├── test_vogler.py          # 22 tests
 │   ├── test_input.py           # 13 tests
-│   └── test_gpu.py             # 12 tests
+│   ├── test_gpu.py             # 12 tests
+│   └── test_channel_models.py  # 47 tests (Watterson, noise, impairments, recording)
 │
 └── scripts/
     └── run_dashboard.py
@@ -285,7 +430,7 @@ pytest tests/test_vogler.py -v
 pytest tests/ --cov=hfpathsim
 ```
 
-Current test status: **47 tests passing**
+Current test status: **94 tests passing**
 
 ## Contributing
 
@@ -332,14 +477,19 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - [x] Gaussian scatter fading
 - [x] Overlap-save convolution
 - [x] Real-time visualization
-- [x] 47 unit tests
 
-### Phase 3: Enhanced Fidelity (Planned)
-- [ ] Watterson model validation
-- [ ] AWGN and atmospheric noise injection
-- [ ] AGC and limiting simulation
-- [ ] Frequency offset simulation
-- [ ] Recording and playback of channel states
+### Phase 3: Enhanced Fidelity (Complete)
+- [x] Watterson tapped delay line model
+- [x] AWGN and atmospheric noise injection (ITU-R P.372)
+- [x] Man-made noise modeling
+- [x] Impulse noise generation
+- [x] AGC with attack/release dynamics
+- [x] Signal limiting (hard/soft/cubic)
+- [x] Frequency offset and drift simulation
+- [x] Phase noise modeling
+- [x] Impairment chain for combined effects
+- [x] Channel state recording and playback
+- [x] 94 unit tests
 
 ### Phase 4: Advanced Propagation (Planned)
 - [ ] Full ray tracing engine
