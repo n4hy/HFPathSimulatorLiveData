@@ -1,0 +1,32 @@
+[project]
+name = "hfpathsim"
+version = "0.1.0"
+description = "HF Channel Simulator with Vogler-Hoffmeyer IPM and RTX-5090 GPU acceleration"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.12",
+    "PyQt6>=6.6",
+    "pyqtgraph>=0.13",
+    "cupy-cuda12x>=13.0",
+    "pyzmq>=25.0",
+    "pybind11>=2.12",
+]
+
+[project.optional-dependencies]
+sdr = ["soapysdr"]
+iri = ["iri2016"]
+dev = ["pytest", "pytest-qt"]
+
+[project.scripts]
+hfpathsim = "hfpathsim.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68", "pybind11>=2.12", "cmake>=3.28"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"hfpathsim.gui.resources" = ["*.qss"]
