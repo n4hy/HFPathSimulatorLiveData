@@ -15,7 +15,7 @@ The simulator implements the Vogler-Hoffmeyer reflection coefficient model from 
 
 ## Features
 
-### Implemented (Phases 1-3)
+### Implemented (Phases 1-4)
 
 - **Vogler-Hoffmeyer IPM Core**
   - Complex gamma function computation for reflection coefficient R(ω)
@@ -62,6 +62,27 @@ The simulator implements the Vogler-Hoffmeyer reflection coefficient model from 
   - Playback with interpolation
   - Reproducible testing scenarios
 
+- **Physics-Based Ray Tracing (Phase 4)**
+  - Spherical Earth geometry with computed sec(φ) replacing hardcoded approximations
+  - 2D Haselgrove ray equation integration
+  - Multi-hop propagation mode discovery (1F2, 2F2, 3F2, 1E, Es)
+  - IonosphereProfile with electron density Ne(h) arrays
+  - Refractive index and plasma frequency calculations
+  - Launch angle and group delay computation
+
+- **Sporadic-E Layer Modeling**
+  - Time-varying Es layer with configurable foEs and hmEs
+  - Layer injection into ionosphere profiles
+  - Occurrence probability estimation (seasonal, diurnal, latitude)
+  - Presets: weak, moderate, strong, intense
+
+- **Geomagnetic Effects**
+  - F10.7 solar flux scaling of foF2
+  - Kp index modulation of Doppler/delay spread
+  - Dst storm-time depression of critical frequencies
+  - Polar blackout detection
+  - Storm phase classification (initial, main, recovery)
+
 - **PyQt6 Dashboard**
   - Channel frequency response |H(f)| display
   - Impulse response |h(t)| visualization
@@ -88,7 +109,6 @@ The simulator implements the Vogler-Hoffmeyer reflection coefficient model from 
 
 ### Planned (Future Phases)
 
-- **Phase 4**: Full ray tracing, oblique incidence geometry
 - **Phase 5**: Real-time IQ output, GNU Radio integration
 
 ## Installation
@@ -158,6 +178,131 @@ state = channel.get_state()
 print(f"Transfer function shape: {state.transfer_function.shape}")
 print(f"Delay spread: {params.delay_spread_ms} ms")
 print(f"Doppler spread: {params.doppler_spread_hz} Hz")
+```
+
+### Ray Tracing with Computed Geometry
+
+```python
+from hfpathsim.core.raytracing import (
+    create_simple_profile,
+    find_propagation_modes,
+    sec_phi_spherical,
+    great_circle_distance,
+)
+
+# Create ionosphere profile
+profile = create_simple_profile(foF2=7.5, hmF2=300.0, foE=3.0, hmE=110.0)
+
+# Find viable propagation modes for a path
+# Washington DC to London
+modes = find_propagation_modes(
+    profile,
+    tx_lat=38.9, tx_lon=-77.0,   # Washington DC
+    rx_lat=51.5, rx_lon=-0.1,    # London
+    frequency_mhz=14.0,
+    max_hops=3,
+)
+
+for mode in modes:
+    print(f"{mode.name}: delay={mode.group_delay_ms:.1f}ms, "
+          f"amplitude={mode.relative_amplitude:.2f}")
+
+# Get physically-computed sec(φ) for MUF calculation
+path_km = great_circle_distance(38.9, -77.0, 51.5, -0.1)
+sec_phi = sec_phi_spherical(path_km, hm_km=300.0)
+muf = 7.5 * sec_phi  # foF2 * sec(φ)
+print(f"Path: {path_km:.0f} km, sec(φ): {sec_phi:.2f}, MUF: {muf:.1f} MHz")
+```
+
+### Channel with Ray Tracing Integration
+
+```python
+from hfpathsim.core.channel import HFChannel, RayTracingConfig
+from hfpathsim.core.parameters import VoglerParameters
+
+# Enable physics-based ray tracing
+ray_config = RayTracingConfig(
+    enabled=True,
+    tx_lat=38.9, tx_lon=-77.0,
+    rx_lat=51.5, rx_lon=-0.1,
+    max_hops=3,
+    use_sporadic_e=True,
+    use_geomagnetic=True,
+)
+
+channel = HFChannel(
+    params=VoglerParameters(frequency_mhz=14.0),
+    use_ray_tracing=True,
+    ray_config=ray_config,
+)
+
+# Enable sporadic-E layer
+channel.enable_sporadic_e(foEs=8.0, hmEs=105.0)
+
+# Apply geomagnetic storm conditions
+channel.set_geomagnetic_indices(f10_7=150, kp=5, dst=-80)
+
+# Get MUF for current conditions
+muf = channel.get_muf("F2")
+print(f"MUF: {muf:.1f} MHz")
+```
+
+### Sporadic-E Simulation
+
+```python
+from hfpathsim.iono.sporadic_e import (
+    SporadicELayer, SporadicEConfig,
+    estimate_es_occurrence, estimate_foEs,
+    create_es_from_preset,
+)
+from hfpathsim.core.raytracing import create_simple_profile
+
+# Estimate Es occurrence probability
+prob = estimate_es_occurrence(latitude=45.0, month=6, hour_utc=14)
+print(f"Es occurrence probability: {prob:.1%}")
+
+# Create Es layer from preset
+config = create_es_from_preset("strong")  # foEs=10 MHz
+es_layer = SporadicELayer(config)
+
+# Inject into ionosphere profile
+profile = create_simple_profile(foF2=7.5, hmF2=300.0)
+profile_with_es = es_layer.inject(profile)
+
+# Es MUF for 1000 km path
+es_muf = es_layer.get_muf(path_km=1000.0)
+print(f"Es MUF: {es_muf:.1f} MHz")
+```
+
+### Geomagnetic Storm Effects
+
+```python
+from hfpathsim.iono.geomagnetic import (
+    GeomagneticIndices, GeomagneticModulator,
+    classify_storm_phase,
+)
+from hfpathsim.core.raytracing import create_simple_profile
+
+# Create storm conditions
+indices = GeomagneticIndices.disturbed()  # Kp=5, Dst=-80
+modulator = GeomagneticModulator(indices)
+
+# Scale ionospheric parameters
+foF2_base = 7.5
+foF2_storm = modulator.scale_foF2(foF2_base, latitude=45.0)
+print(f"foF2: {foF2_base} MHz -> {foF2_storm:.1f} MHz (storm)")
+
+# Enhanced fading during storm
+doppler_storm = modulator.scale_doppler_spread(1.0, latitude=60.0)
+print(f"Doppler spread enhanced to {doppler_storm:.1f} Hz")
+
+# Check for polar blackout
+if modulator.is_blackout(frequency_mhz=7.0, latitude=70.0):
+    print("WARNING: Polar blackout conditions!")
+
+# Classify storm phase
+phase = classify_storm_phase(dst=-80, dst_rate=-15)
+print(f"Storm phase: {phase}")
 ```
 
 ### File Playback
@@ -305,13 +450,20 @@ hfpathsim/
 │   ├── __main__.py             # Entry point
 │   │
 │   ├── core/                   # Core simulation
-│   │   ├── parameters.py       # VoglerParameters, ITUCondition
-│   │   ├── channel.py          # HFChannel class
+│   │   ├── parameters.py       # VoglerParameters, ITUCondition, PropagationMode
+│   │   ├── channel.py          # HFChannel with ray tracing integration
 │   │   ├── vogler_ipm.py       # Vogler model interface
 │   │   ├── watterson.py        # Watterson TDL model
 │   │   ├── noise.py            # Noise generators (AWGN, atmospheric, etc.)
 │   │   ├── impairments.py      # AGC, limiter, frequency offset
-│   │   └── recording.py        # Channel state recording/playback
+│   │   ├── recording.py        # Channel state recording/playback
+│   │   │
+│   │   └── raytracing/         # Physics-based ray tracing (Phase 4)
+│   │       ├── __init__.py     # Module exports
+│   │       ├── geometry.py     # Spherical Earth, sec_phi, great circle
+│   │       ├── ionosphere.py   # IonosphereProfile, Ne(h), refractive index
+│   │       ├── ray_engine.py   # 2D Haselgrove equations, RayPath
+│   │       └── path_finder.py  # Multi-hop mode discovery
 │   │
 │   ├── gpu/                    # GPU acceleration
 │   │   ├── __init__.py         # Python interface
@@ -328,10 +480,12 @@ hfpathsim/
 │   │   ├── network.py          # TCP/UDP/ZMQ
 │   │   └── sdr.py              # SoapySDR
 │   │
-│   ├── iono/                   # Ionospheric data
+│   ├── iono/                   # Ionospheric data and effects
 │   │   ├── manual.py           # Manual entry
 │   │   ├── giro.py             # GIRO client
-│   │   └── iri.py              # IRI-2020
+│   │   ├── iri.py              # IRI-2020 with to_ionosphere_profile()
+│   │   ├── sporadic_e.py       # Sporadic-E layer modeling (Phase 4)
+│   │   └── geomagnetic.py      # Geomagnetic effects (Phase 4)
 │   │
 │   └── gui/                    # PyQt6 interface
 │       ├── main_window.py
@@ -343,11 +497,14 @@ hfpathsim/
 │           ├── parameters.py
 │           └── input_config.py
 │
-├── tests/
-│   ├── test_vogler.py          # 22 tests
-│   ├── test_input.py           # 13 tests
-│   ├── test_gpu.py             # 12 tests
-│   └── test_channel_models.py  # 47 tests (Watterson, noise, impairments, recording)
+├── tests/                      # 185 unit tests
+│   ├── test_vogler.py          # Vogler model tests (22 tests)
+│   ├── test_input.py           # Input sources (13 tests)
+│   ├── test_gpu.py             # GPU acceleration (12 tests)
+│   ├── test_channel_models.py  # Watterson, noise, impairments (47 tests)
+│   ├── test_raytracing.py      # Ray tracing geometry & engine (33 tests)
+│   ├── test_sporadic_e.py      # Sporadic-E layer (24 tests)
+│   └── test_geomagnetic.py     # Geomagnetic effects (34 tests)
 │
 └── scripts/
     └── run_dashboard.py
@@ -371,6 +528,20 @@ Where:
 - **t₀** - Base propagation delay
 - **Γ** - Complex gamma function
 
+### Oblique Incidence Geometry (Phase 4)
+
+The simulator now computes the secant of the angle of incidence using spherical Earth geometry:
+
+```
+sec(φ) = 1 / cos(φ)
+
+where sin(φ) = R·sin(β) / slant_range
+      β = path_km / (2·R)  (half angular path)
+      slant_range = √(R² + (R+h)² - 2R(R+h)cos(β))
+```
+
+This replaces the previous hardcoded `sec_phi = 3.0` with physically accurate values based on actual path length and layer height.
+
 ### Channel Statistics
 
 The simulator implements the Watterson/Gaussian scatter model for time-varying fading:
@@ -383,15 +554,123 @@ The scattering function S(τ,ν) describes the power distribution:
 S(τ,ν) = exp(-τ/τ_rms) × exp(-(ν/ν_rms)²)
 ```
 
+### Geomagnetic Effects
+
+The simulator models space weather impacts on HF propagation:
+
+- **F10.7 scaling**: `foF2 ∝ √(1 + 0.014·(F10.7 - 100))`
+- **Storm depression**: `Δ foF2 = 0.05·Dst·cos²(lat)` (Dst negative during storms)
+- **Doppler enhancement**: `ν_enhanced = ν_base · (1 + 0.1·Kp)`
+
 ### Key Parameters
 
 | Parameter | Symbol | Typical Range | Description |
 |-----------|--------|---------------|-------------|
 | foF2 | foF2 | 3-15 MHz | F2 layer critical frequency |
 | hmF2 | hmF2 | 200-400 km | F2 layer peak height |
+| foEs | foEs | 2-15 MHz | Sporadic-E critical frequency |
 | Delay spread | τ | 0.5-7 ms | RMS multipath delay |
 | Doppler spread | ν | 0.1-10 Hz | Two-sided Doppler bandwidth |
 | Path length | d | 100-10000 km | Great circle distance |
+| F10.7 | F10.7 | 65-300 sfu | Solar radio flux index |
+| Kp | Kp | 0-9 | Geomagnetic activity index |
+| Dst | Dst | -500 to +50 nT | Storm-time index |
+
+## Testing
+
+The project includes comprehensive unit tests covering all modules.
+
+### Running Tests
+
+```bash
+# Run all tests
+pytest tests/ -v
+
+# Run with summary
+pytest tests/ -v --tb=short
+
+# Run specific test modules
+pytest tests/test_raytracing.py -v      # Ray tracing tests
+pytest tests/test_sporadic_e.py -v      # Sporadic-E tests
+pytest tests/test_geomagnetic.py -v     # Geomagnetic tests
+pytest tests/test_vogler.py -v          # Vogler model tests
+pytest tests/test_channel_models.py -v  # Channel model tests
+
+# Run with coverage report
+pytest tests/ --cov=hfpathsim --cov-report=html
+
+# Run tests matching a pattern
+pytest tests/ -k "test_sec_phi" -v
+```
+
+### Test Categories
+
+| Test File | Tests | Coverage |
+|-----------|-------|----------|
+| `test_vogler.py` | 22 | Vogler parameters, HFChannel, reflection coefficients |
+| `test_channel_models.py` | 47 | Watterson, noise, AGC, limiter, impairments, recording |
+| `test_raytracing.py` | 33 | Geometry, ionosphere profiles, ray engine, path finder |
+| `test_sporadic_e.py` | 24 | Es config, layer injection, occurrence estimation |
+| `test_geomagnetic.py` | 34 | Indices, foF2/hmF2 scaling, storm effects, Kp/Ap conversion |
+| `test_input.py` | 13 | File sources, network sources, format conversion |
+| `test_gpu.py` | 12 | GPU detection, transfer function, scattering function |
+| **Total** | **185** | |
+
+### Test Structure
+
+Each test module follows a consistent structure:
+
+```python
+class TestGeometry:
+    """Tests for geometry module."""
+
+    def test_great_circle_distance_known_path(self):
+        """Test known great circle distance: NYC to London ~5570 km."""
+        d = great_circle_distance(40.7128, -74.0060, 51.5074, -0.1278)
+        assert 5500 < d < 5700
+
+    def test_sec_phi_typical_values(self):
+        """Check sec_phi is reasonable for typical paths."""
+        sec_phi = sec_phi_spherical(1000.0, 300.0)
+        assert 1.5 < sec_phi < 3.0
+```
+
+### Integration Tests
+
+Integration tests verify end-to-end functionality:
+
+```python
+class TestIntegration:
+    def test_washington_london_path(self):
+        """Test transatlantic path with ray tracing."""
+        profile = create_simple_profile(foF2=7.5, hmF2=300.0)
+        modes = find_propagation_modes(
+            profile,
+            tx_lat=38.9, tx_lon=-77.0,
+            rx_lat=51.5, rx_lon=-0.1,
+            frequency_mhz=14.0,
+        )
+        assert len(modes) >= 1
+
+    def test_geomagnetic_in_channel(self):
+        """Channel should accept geomagnetic modulation."""
+        channel = HFChannel(use_ray_tracing=True)
+        channel.set_geomagnetic_indices(f10_7=150, kp=4, dst=-50)
+        muf = channel.get_muf()
+        assert muf > 0
+```
+
+### Current Test Status
+
+```
+========================= 185 passed in 2.20s =========================
+```
+
+All tests pass. The test suite validates:
+- Mathematical correctness (gamma functions, geometry)
+- Physical consistency (MUF calculations, propagation modes)
+- Edge cases (poles, division by zero, out-of-range inputs)
+- Integration between modules
 
 ## Performance
 
@@ -404,6 +683,8 @@ S(τ,ν) = exp(-τ/τ_rms) × exp(-(ν/ν_rms)²)
 - Transfer function computation: ~0.5 ms for 4096 points
 - Overlap-save block: ~0.2 ms per 4096 samples
 - Scattering function: ~1 ms for 64x32 grid
+- Ray tracing (single ray): <10 ms CPU
+- Mode discovery (3 hops): <100 ms CPU
 
 *Note: GPU acceleration requires building the native CUDA module. CuPy provides automatic fallback but may need kernel recompilation for new GPU architectures.*
 
@@ -417,20 +698,9 @@ S(τ,ν) = exp(-τ/τ_rms) × exp(-(ν/ν_rms)²)
 
 4. **IRI-2020**: International Reference Ionosphere model, https://irimodel.org/
 
-## Testing
+5. **ITU-R P.372**: "Radio noise," for atmospheric and man-made noise modeling.
 
-```bash
-# Run all tests
-pytest tests/ -v
-
-# Run specific test file
-pytest tests/test_vogler.py -v
-
-# Run with coverage
-pytest tests/ --cov=hfpathsim
-```
-
-Current test status: **94 tests passing**
+6. **Haselgrove Equations**: Haselgrove, J., "Ray theory and a new method for ray tracing," Physics of the Ionosphere, 1955.
 
 ## Contributing
 
@@ -489,14 +759,16 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - [x] Phase noise modeling
 - [x] Impairment chain for combined effects
 - [x] Channel state recording and playback
-- [x] 94 unit tests
 
-### Phase 4: Advanced Propagation (Planned)
-- [ ] Full ray tracing engine
-- [ ] Oblique incidence geometry
-- [ ] Multi-hop path support
-- [ ] Sporadic-E layer modeling
-- [ ] Geomagnetic storm effects
+### Phase 4: Advanced Propagation (Complete)
+- [x] Spherical Earth geometry (replaces hardcoded sec_phi)
+- [x] 2D Haselgrove ray equation integration
+- [x] Multi-hop propagation mode discovery (1F, 2F, 3F, E, Es)
+- [x] IonosphereProfile with Ne(h) electron density
+- [x] Sporadic-E layer modeling with time variation
+- [x] Geomagnetic effects (F10.7, Kp, Dst modulation)
+- [x] HFChannel integration with ray tracing
+- [x] 91 new unit tests (185 total)
 
 ### Phase 5: Integration (Planned)
 - [ ] Real-time IQ output (sound card, network)
