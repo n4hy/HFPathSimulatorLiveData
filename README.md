@@ -97,6 +97,7 @@ The simulator implements the Vogler-Hoffmeyer reflection coefficient model from 
 - File playback: WAV, SigMF, raw binary (complex64, int16, int8)
 - Network streams: TCP, UDP, ZeroMQ
 - SDR support via SoapySDR (RTL-SDR, HackRF, USRP, etc.)
+- **Flex Radio DAX IQ**: Native SmartSDR integration with VITA-49 streaming
 
 ### GPU Acceleration
 
@@ -141,7 +142,7 @@ Full-featured graphical interface with tabbed controls:
 
 | Tab | Features |
 |-----|----------|
-| **Input** | File/Network/SDR source selection, sample rate, format |
+| **Input** | File/Network/SDR/Flex Radio source selection, sample rate, format |
 | **Channel** | Vogler/Watterson model selection, ITU presets, ionospheric params, tap config |
 | **Noise** | AWGN, atmospheric, man-made, impulse noise with SNR control |
 | **Impairments** | AGC with gain meter, limiter with modes, frequency offset/drift |
@@ -240,6 +241,7 @@ Configure the signal source:
 - **File**: Browse for IQ files (WAV, SigMF, raw), set sample rate and format
 - **Network**: TCP/UDP/ZMQ streaming with host:port configuration
 - **SDR**: Scan for SoapySDR devices, set center frequency and gain
+- **Flex Radio**: Connect to SmartSDR radios via DAX IQ streaming (VITA-49)
 
 #### Channel Tab
 Configure the channel model:
@@ -597,6 +599,56 @@ source = NetworkInputSource(
 )
 ```
 
+### Flex Radio DAX IQ Input
+
+```python
+from hfpathsim.input.flexradio import FlexRadioInputSource
+
+# Discover Flex Radios on the network
+radios = FlexRadioInputSource.discover_radios(timeout=3.0)
+for radio in radios:
+    print(f"Found: {radio['nickname']} at {radio['ip']}")
+
+# Connect to a Flex Radio
+source = FlexRadioInputSource(
+    host="192.168.1.100",       # Radio IP address
+    dax_channel=1,              # DAX IQ channel (1-8)
+    sample_rate_hz=48000,       # 24000, 48000, 96000, or 192000
+    center_freq_hz=14.074e6,    # Center frequency
+)
+
+source.open()
+
+# Read samples (returns complex64 numpy array)
+while True:
+    samples = source.read(4096)
+    if samples is None or len(samples) == 0:
+        break
+    # Process samples through HF channel simulator...
+
+# Get streaming statistics
+stats = source.get_statistics()
+print(f"Packets received: {stats['packets_received']}")
+print(f"Samples read: {stats['samples_read']}")
+print(f"Buffer overflow count: {stats['buffer_overflows']}")
+
+source.close()
+```
+
+**Flex Radio Features:**
+- Automatic radio discovery via UDP broadcast
+- VITA-49 packet format parsing (DAX IQ stream packets)
+- Sample rates: 24 kHz, 48 kHz, 96 kHz, 192 kHz
+- DAX channels 1-8 support
+- Frequency control via SmartSDR TCP API
+- Buffer management with overflow detection
+- Thread-safe streaming with configurable buffer size
+
+**Requirements:**
+- Flex Radio running SmartSDR v3.x or later
+- DAX IQ enabled in SmartSDR
+- Network connectivity to radio (same subnet recommended)
+
 ---
 
 ## Project Structure
@@ -640,7 +692,8 @@ HFPathSimulatorLiveData/
 │   │   ├── base.py                # InputSource ABC, InputFormat
 │   │   ├── file.py                # File playback (WAV, SigMF, raw)
 │   │   ├── network.py             # TCP/UDP/ZMQ streaming
-│   │   └── sdr.py                 # SoapySDR interface
+│   │   ├── sdr.py                 # SoapySDR interface
+│   │   └── flexradio.py           # Flex Radio SmartSDR DAX IQ streaming
 │   │
 │   ├── iono/                      # Ionospheric data and effects
 │   │   ├── manual.py              # Manual parameter entry

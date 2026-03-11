@@ -3,6 +3,7 @@
 from .base import InputSource, InputFormat
 from .file import FileInputSource
 from .network import NetworkInputSource, NetworkProtocol
+from .flexradio import FlexRadioInputSource
 
 __all__ = [
     "InputSource",
@@ -10,4 +11,5 @@ __all__ = [
     "FileInputSource",
     "NetworkInputSource",
     "NetworkProtocol",
+    "FlexRadioInputSource",
 ]

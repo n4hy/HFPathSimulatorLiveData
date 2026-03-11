@@ -91,7 +91,7 @@ class SDRInputSource(InputSource):
     def open(self) -> bool:
         """Open SDR device and configure stream."""
         if not self._soapy_available:
-            print("SoapySDR not installed. Install with: pip install soapysdr")
+            print("SoapySDR not installed. Install with: sudo apt install python3-soapysdr")
             return False
 
         try:

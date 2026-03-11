@@ -23,6 +23,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from hfpathsim.input.base import InputSource, InputFormat
 from hfpathsim.input.file import FileInputSource
 from hfpathsim.input.network import NetworkInputSource, NetworkProtocol
+from hfpathsim.input.flexradio import FlexRadioInputSource
 
 
 class InputConfigWidget(QWidget):
@@ -52,7 +53,7 @@ class InputConfigWidget(QWidget):
         type_row.addWidget(QLabel("Type:"))
 
         self._type_combo = QComboBox()
-        self._type_combo.addItems(["File", "Network", "SDR"])
+        self._type_combo.addItems(["File", "Network", "SDR", "Flex Radio"])
         self._type_combo.currentTextChanged.connect(self._on_type_changed)
         type_row.addWidget(self._type_combo)
 
@@ -85,6 +86,10 @@ class InputConfigWidget(QWidget):
         # SDR config
         self._sdr_widget = self._create_sdr_config()
         self._stack.addWidget(self._sdr_widget)
+
+        # Flex Radio config
+        self._flex_widget = self._create_flex_config()
+        self._stack.addWidget(self._flex_widget)
 
         layout.addWidget(group)
 
@@ -208,9 +213,124 @@ class InputConfigWidget(QWidget):
 
         return widget
 
+    def _create_flex_config(self) -> QWidget:
+        """Create Flex Radio DAX IQ source configuration panel."""
+        widget = QWidget()
+        layout = QGridLayout(widget)
+        layout.setContentsMargins(0, 4, 0, 0)
+
+        # Radio host/IP
+        layout.addWidget(QLabel("Radio IP:"), 0, 0)
+        self._flex_host = QLineEdit("192.168.1.100")
+        self._flex_host.setPlaceholderText("e.g., 192.168.1.100")
+        layout.addWidget(self._flex_host, 0, 1)
+
+        # Discover button
+        self._flex_discover_btn = QPushButton("Discover")
+        self._flex_discover_btn.clicked.connect(self._discover_flex)
+        layout.addWidget(self._flex_discover_btn, 0, 2)
+
+        # Discovered radios combo
+        layout.addWidget(QLabel("Radio:"), 0, 3)
+        self._flex_radio_combo = QComboBox()
+        self._flex_radio_combo.addItem("(Enter IP or Discover)")
+        self._flex_radio_combo.currentIndexChanged.connect(self._on_flex_radio_selected)
+        layout.addWidget(self._flex_radio_combo, 0, 4)
+
+        # DAX channel
+        layout.addWidget(QLabel("DAX Channel:"), 1, 0)
+        self._flex_dax = QSpinBox()
+        self._flex_dax.setRange(1, 8)
+        self._flex_dax.setValue(1)
+        layout.addWidget(self._flex_dax, 1, 1)
+
+        # Sample rate
+        layout.addWidget(QLabel("Sample Rate:"), 1, 2)
+        self._flex_rate = QComboBox()
+        self._flex_rate.addItems(["24 kHz", "48 kHz", "96 kHz", "192 kHz"])
+        self._flex_rate.setCurrentText("48 kHz")
+        layout.addWidget(self._flex_rate, 1, 3, 1, 2)
+
+        # Slice number (for frequency control)
+        layout.addWidget(QLabel("Slice:"), 2, 0)
+        self._flex_slice = QSpinBox()
+        self._flex_slice.setRange(0, 7)
+        self._flex_slice.setValue(0)
+        layout.addWidget(self._flex_slice, 2, 1)
+
+        # Center frequency
+        layout.addWidget(QLabel("Frequency:"), 2, 2)
+        self._flex_freq = QDoubleSpinBox()
+        self._flex_freq.setRange(0.1, 54.0)
+        self._flex_freq.setValue(14.0)
+        self._flex_freq.setDecimals(6)
+        self._flex_freq.setSuffix(" MHz")
+        layout.addWidget(self._flex_freq, 2, 3, 1, 2)
+
+        # Status label
+        self._flex_status = QLabel("Not connected")
+        layout.addWidget(self._flex_status, 3, 0, 1, 5)
+
+        return widget
+
+    def _discover_flex(self):
+        """Discover Flex Radio devices on the network."""
+        self._flex_radio_combo.clear()
+        self._flex_radio_combo.addItem("(Searching...)")
+        self._flex_discover_btn.setEnabled(False)
+
+        try:
+            radios = FlexRadioInputSource.discover_radios(timeout=3.0)
+            self._flex_radio_combo.clear()
+
+            if radios:
+                for radio in radios:
+                    label = f"{radio.get('nickname', radio.get('model', 'Unknown'))} ({radio.get('ip', '')})"
+                    self._flex_radio_combo.addItem(label, radio)
+                self._flex_status.setText(f"Found {len(radios)} radio(s)")
+            else:
+                self._flex_radio_combo.addItem("(No radios found)")
+                self._flex_status.setText("No Flex Radios found on network")
+        except Exception as e:
+            self._flex_radio_combo.clear()
+            self._flex_radio_combo.addItem("(Discovery failed)")
+            self._flex_status.setText(f"Discovery error: {e}")
+        finally:
+            self._flex_discover_btn.setEnabled(True)
+
+    def _on_flex_radio_selected(self, index: int):
+        """Handle Flex Radio selection from discovered list."""
+        radio_data = self._flex_radio_combo.currentData()
+        if radio_data and isinstance(radio_data, dict):
+            ip = radio_data.get("ip", "")
+            if ip:
+                self._flex_host.setText(ip)
+                self._flex_status.setText(f"Selected: {radio_data.get('nickname', radio_data.get('model', 'Unknown'))}")
+
+    def _create_flex_source(self) -> Optional[InputSource]:
+        """Create Flex Radio input source from current settings."""
+        # Parse sample rate
+        rate_text = self._flex_rate.currentText()
+        rate_map = {
+            "24 kHz": 24000,
+            "48 kHz": 48000,
+            "96 kHz": 96000,
+            "192 kHz": 192000,
+        }
+        sample_rate = rate_map.get(rate_text, 48000)
+
+        source = FlexRadioInputSource(
+            host=self._flex_host.text(),
+            dax_channel=self._flex_dax.value(),
+            sample_rate_hz=sample_rate,
+            center_freq_hz=self._flex_freq.value() * 1e6,
+        )
+
+        return source
+
     def _on_type_changed(self, type_name: str):
         """Handle source type change."""
-        index = {"File": 0, "Network": 1, "SDR": 2}.get(type_name, 0)
+        index = {"File": 0, "Network": 1, "SDR": 2, "Flex Radio": 3}.get(type_name, 0)
         self._stack.setCurrentIndex(index)
 
     def _browse_file(self):
@@ -297,6 +417,10 @@ class InputConfigWidget(QWidget):
             self._current_source = self._create_file_source()
         elif source_type == "Network":
             self._current_source = self._create_network_source()
+        elif source_type == "Flex Radio":
+            self._current_source = self._create_flex_source()
+            if hasattr(self, '_flex_status'):
+                self._flex_status.setText("Connecting...")
         else:
             # SDR would go here
             pass
