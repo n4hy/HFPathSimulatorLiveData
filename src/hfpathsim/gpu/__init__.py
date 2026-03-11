@@ -3,13 +3,20 @@
 This module provides CUDA-accelerated implementations of:
 - Vogler reflection coefficient computation
 - Channel transfer function H(f,t)
-- Overlap-save convolution
+- Overlap-save convolution (single and batched)
+- Doppler fading generation
+- Spectrum computation
 - Scattering function computation
 
 Falls back to CuPy or NumPy if native CUDA module unavailable.
+
+Phase 5 additions:
+- Batched cuFFT for high-throughput processing
+- GPU-accelerated Doppler fading generation
+- Native spectrum computation for GUI
 """
 
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 import numpy as np
 
 # Try to import native CUDA module
@@ -33,6 +40,10 @@ if _gpu_module is None:
         _cupy_available = True
     except ImportError:
         pass
+
+
+# Default random seed for reproducibility
+_DEFAULT_SEED = 42
 
 
 def _test_cupy_kernels() -> bool:
@@ -363,3 +374,225 @@ def compute_scattering_function(
     S = S / np.max(S)
 
     return S.astype(np.float32)
+
+
+def generate_doppler_fading(
+    doppler_spread_hz: float,
+    sample_rate: float,
+    n_samples: int,
+    seed: int = _DEFAULT_SEED,
+) -> np.ndarray:
+    """Generate Doppler-shaped fading samples.
+
+    GPU-accelerated generation of complex fading coefficients with a
+    Gaussian Doppler power spectrum, suitable for HF channel simulation.
+
+    Args:
+        doppler_spread_hz: Two-sided Doppler spread in Hz
+        sample_rate: Sample rate in Hz
+        n_samples: Number of samples to generate
+        seed: Random seed for reproducibility
+
+    Returns:
+        Complex fading coefficients array
+    """
+    if _gpu_module is not None:
+        return _gpu_module.generate_doppler_fading(
+            doppler_spread_hz, sample_rate, n_samples, seed
+        )
+
+    if _cupy_available and _test_cupy_kernels():
+        try:
+            return _generate_doppler_fading_cupy(
+                doppler_spread_hz, sample_rate, n_samples, seed
+            )
+        except Exception:
+            pass  # Fall through to numpy
+
+    return _generate_doppler_fading_numpy(
+        doppler_spread_hz, sample_rate, n_samples, seed
+    )
+
+
+def _generate_doppler_fading_cupy(
+    doppler_spread_hz: float,
+    sample_rate: float,
+    n_samples: int,
+    seed: int,
+) -> np.ndarray:
+    """CuPy implementation of Doppler fading generation."""
+    import cupy as cp
+
+    # Set seed for reproducibility
+    cp.random.seed(seed)
+
+    # Generate complex Gaussian noise
+    noise = (
+        cp.random.randn(n_samples) + 1j * cp.random.randn(n_samples)
+    ).astype(cp.complex64) / cp.sqrt(2)
+
+    # FFT to frequency domain
+    noise_spectrum = cp.fft.fft(noise)
+
+    # Create Doppler filter (Gaussian)
+    freq = cp.fft.fftfreq(n_samples, 1 / sample_rate)
+    sigma = doppler_spread_hz / 2.355  # FWHM to sigma
+    doppler_filter = cp.exp(-0.5 * (freq / sigma) ** 2)
+
+    # Apply filter
+    noise_spectrum *= doppler_filter
+
+    # IFFT back to time domain
+    fading = cp.fft.ifft(noise_spectrum)
+
+    return cp.asnumpy(fading).astype(np.complex64)
+
+
+def _generate_doppler_fading_numpy(
+    doppler_spread_hz: float,
+    sample_rate: float,
+    n_samples: int,
+    seed: int,
+) -> np.ndarray:
+    """NumPy fallback implementation of Doppler fading generation."""
+    rng = np.random.default_rng(seed)
+
+    # Generate complex Gaussian noise
+    noise = (
+        rng.standard_normal(n_samples) + 1j * rng.standard_normal(n_samples)
+    ).astype(np.complex64) / np.sqrt(2)
+
+    # FFT to frequency domain
+    noise_spectrum = np.fft.fft(noise)
+
+    # Create Doppler filter (Gaussian)
+    freq = np.fft.fftfreq(n_samples, 1 / sample_rate)
+    sigma = doppler_spread_hz / 2.355  # FWHM to sigma
+    doppler_filter = np.exp(-0.5 * (freq / sigma) ** 2)
+
+    # Apply filter
+    noise_spectrum *= doppler_filter
+
+    # IFFT back to time domain
+    fading = np.fft.ifft(noise_spectrum)
+
+    return fading.astype(np.complex64)
+
+
+def compute_spectrum_db(
+    signal: np.ndarray,
+    reference: float = 1.0,
+) -> np.ndarray:
+    """Compute power spectrum in dB.
+
+    GPU-accelerated power spectrum computation for efficient
+    GUI updates.
+
+    Args:
+        signal: Complex input signal
+        reference: Reference power for dB computation
+
+    Returns:
+        Power spectrum in dB (not fftshifted)
+    """
+    if _gpu_module is not None:
+        # Native CUDA module available
+        signal = np.ascontiguousarray(signal, dtype=np.complex64)
+        return _gpu_module.compute_spectrum(signal, reference)
+
+    if _cupy_available and _test_cupy_kernels():
+        try:
+            return _compute_spectrum_db_cupy(signal, reference)
+        except Exception:
+            pass  # Fall through to numpy
+
+    return _compute_spectrum_db_numpy(signal, reference)
+
+
+def _compute_spectrum_db_cupy(
+    signal: np.ndarray,
+    reference: float,
+) -> np.ndarray:
+    """CuPy implementation of spectrum computation."""
+    import cupy as cp
+
+    signal_gpu = cp.asarray(signal, dtype=cp.complex64)
+    spectrum = cp.fft.fft(signal_gpu)
+    power = cp.abs(spectrum) ** 2
+    power_db = 10 * cp.log10(power / reference + 1e-30)
+    power_db = cp.maximum(power_db, -120.0)
+
+    return cp.asnumpy(power_db).astype(np.float32)
+
+
+def _compute_spectrum_db_numpy(
+    signal: np.ndarray,
+    reference: float,
+) -> np.ndarray:
+    """NumPy fallback implementation of spectrum computation."""
+    spectrum = np.fft.fft(signal)
+    power = np.abs(spectrum) ** 2
+    power_db = 10 * np.log10(power / reference + 1e-30)
+    power_db = np.maximum(power_db, -120.0)
+
+    return power_db.astype(np.float32)
+
+
+def apply_channel_batched(
+    input_signal: np.ndarray,
+    transfer_function: np.ndarray,
+    block_size: int = 4096,
+    overlap: int = 1024,
+    batch_size: int = 8,
+) -> np.ndarray:
+    """Apply channel transfer function using batched overlap-save.
+
+    High-throughput GPU-accelerated overlap-save convolution that
+    processes multiple blocks simultaneously.
+
+    Args:
+        input_signal: Complex input signal
+        transfer_function: Channel transfer function H(f)
+        block_size: FFT block size
+        overlap: Overlap samples
+        batch_size: Number of blocks to process in parallel
+
+    Returns:
+        Complex output signal
+    """
+    if _gpu_module is not None:
+        return _gpu_module.apply_channel_batched(
+            input_signal, transfer_function, block_size, overlap, batch_size
+        )
+
+    # Fall back to regular (non-batched) processing
+    return apply_channel(input_signal, transfer_function, block_size, overlap)
+
+
+def get_native_module_available() -> bool:
+    """Check if native CUDA module is available."""
+    return _gpu_module is not None
+
+
+def get_backend_info() -> Dict[str, Any]:
+    """Get detailed backend information.
+
+    Returns:
+        Dictionary with backend details including:
+        - backend: "cuda", "cupy", or "numpy"
+        - native_module: Whether native CUDA module is loaded
+        - cupy_available: Whether CuPy is available
+        - cupy_works: Whether CuPy kernels compile
+        - device_info: GPU device information
+    """
+    info = {
+        "native_module": _gpu_module is not None,
+        "cupy_available": _cupy_available,
+        "cupy_works": _cupy_works if _cupy_tested else "not tested",
+    }
+
+    device_info = get_device_info()
+    info["device_info"] = device_info
+    info["backend"] = device_info.get("backend", "numpy")
+
+    return info

@@ -30,3 +30,10 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "hfpathsim.gui.resources" = ["*.qss"]
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "gpu: marks tests requiring native CUDA module",
+    "benchmark: marks performance benchmark tests",
+]

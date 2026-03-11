@@ -10,9 +10,19 @@ find_package(CUDAToolkit REQUIRED)
 set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
-# Set CUDA architectures (RTX 5090 is Blackwell / compute 12.0)
-# Also include common architectures for compatibility
-set(CMAKE_CUDA_ARCHITECTURES 80 86 89 90 100 120)
+# Set CUDA architectures
+# CUDA 12.0 supports up to sm_90, CUDA 12.8+ needed for sm_100/120 (Blackwell)
+# Check CUDA version and set appropriate architectures
+if(CUDAToolkit_VERSION VERSION_GREATER_EQUAL "12.8")
+    # Full RTX 5090 (Blackwell) support
+    set(CMAKE_CUDA_ARCHITECTURES 80 86 89 90 100 120)
+elseif(CUDAToolkit_VERSION VERSION_GREATER_EQUAL "12.0")
+    # CUDA 12.0-12.7: up to Ada/Hopper
+    set(CMAKE_CUDA_ARCHITECTURES 80 86 89 90)
+else()
+    # Older CUDA: Ampere only
+    set(CMAKE_CUDA_ARCHITECTURES 80 86)
+endif()
 
 # CUDA compile options
 set(CUDA_NVCC_FLAGS ${CUDA_NVCC_FLAGS}
@@ -20,6 +30,11 @@ set(CUDA_NVCC_FLAGS ${CUDA_NVCC_FLAGS}
     --use_fast_math
     -Xcompiler -fPIC
 )
+
+# Disable LTO to avoid GCC/nvcc version mismatch issues
+set(CMAKE_INTERPROCEDURAL_OPTIMIZATION OFF)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-lto")
+set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler -fno-lto")
 
 # Source files
 set(CUDA_SOURCES
@@ -50,6 +65,7 @@ target_link_libraries(_hfpathsim_gpu PRIVATE
     hfpathsim_cuda
     CUDA::cudart
     CUDA::cufft
+    CUDA::curand
 )
 
 # Install the module
