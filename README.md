@@ -984,6 +984,9 @@ tests/test_vogler.py ......................                               [100%]
 - [x] Recording panel with record/playback controls
 - [x] Full processing chain integration in main window
 - [x] Real-time meter updates
+- [x] Flex Radio SmartSDR DAX IQ streaming support
+- [x] VITA-49 packet parsing for DAX IQ streams
+- [x] Radio discovery and GUI integration
 
 ### Phase 7: Output & Integration (Planned)
 - [ ] Real-time IQ output (sound card, network)
@@ -1029,3 +1032,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - The pyqtgraph team for excellent real-time plotting
 - NVIDIA for CUDA and GPU acceleration support
 - The PyQt team for the Qt6 Python bindings
+- FlexRadio Systems for SmartSDR DAX IQ streaming specifications
