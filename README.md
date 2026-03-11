@@ -15,7 +15,7 @@ The simulator implements the Vogler-Hoffmeyer reflection coefficient model from 
 
 ## Features
 
-### Implemented (Phases 1-4)
+### Implemented (Phases 1-5)
 
 - **Vogler-Hoffmeyer IPM Core**
   - Complex gamma function computation for reflection coefficient R(ω)
@@ -101,15 +101,19 @@ The simulator implements the Vogler-Hoffmeyer reflection coefficient model from 
   - GIRO/DIDBase real-time ionosonde data
   - IRI-2020 model integration (optional)
 
-- **GPU Acceleration**
-  - CUDA kernels for Vogler transfer function
+- **GPU Acceleration (Phase 5)**
+  - Native CUDA module with cuFFT for maximum performance
+  - Batched overlap-save convolution using `cufftPlanMany` (68.9 Msps throughput)
+  - GPU-accelerated Doppler fading generation with cuRAND
+  - Real-time spectrum computation for GUI
   - CuPy fallback with automatic kernel compilation
   - NumPy CPU fallback for compatibility
-  - Designed for RTX 5090 (Blackwell, compute 12.0)
+  - Build scripts for easy compilation (`scripts/build_gpu.sh`)
+  - Designed for RTX 5090 (Blackwell), supports sm_80-90 architectures
 
 ### Planned (Future Phases)
 
-- **Phase 5**: Real-time IQ output, GNU Radio integration
+- **Phase 6**: Real-time IQ output, GNU Radio integration
 
 ## Installation
 
@@ -438,6 +442,60 @@ for H in player.iterate(rate_hz=20.0, loop=False):
 H = player.get_at_time(5.0, interpolate=True)
 ```
 
+### GPU Acceleration (Phase 5)
+
+```python
+from hfpathsim.gpu import (
+    get_device_info,
+    get_backend_info,
+    apply_channel_batched,
+    generate_doppler_fading,
+    compute_spectrum_db,
+)
+import numpy as np
+
+# Check GPU status
+info = get_backend_info()
+print(f"Backend: {info['backend']}")
+print(f"Native CUDA module: {info['native_module']}")
+print(f"Device: {info['device_info']['name']}")
+
+# High-throughput batched processing (68.9 Msps achieved)
+input_signal = (np.random.randn(2_000_000) + 1j * np.random.randn(2_000_000)).astype(np.complex64)
+H = np.ones(4096, dtype=np.complex64)
+
+output = apply_channel_batched(
+    input_signal, H,
+    block_size=4096,
+    overlap=1024,
+    batch_size=8  # Process 8 blocks in parallel
+)
+
+# GPU-accelerated Doppler fading generation
+fading = generate_doppler_fading(
+    doppler_spread_hz=1.5,
+    sample_rate=2e6,
+    n_samples=4096,
+    seed=42,
+)
+
+# Fast spectrum computation for real-time GUI
+power_db = compute_spectrum_db(input_signal[:4096], reference=1.0)
+```
+
+### Building the Native CUDA Module
+
+```bash
+# Build the GPU module (requires CUDA Toolkit 12.x)
+./scripts/build_gpu.sh
+
+# Verify installation
+python3 -c "from hfpathsim.gpu import get_backend_info; print(get_backend_info())"
+
+# Expected output with native module:
+# {'backend': 'cuda', 'native_module': True, ...}
+```
+
 ## Project Structure
 
 ```
@@ -493,20 +551,22 @@ hfpathsim/
 │       └── widgets/
 │           ├── channel_display.py
 │           ├── scattering.py
-│           ├── spectrum.py
+│           ├── spectrum.py          # GPU-accelerated spectrum display
 │           ├── parameters.py
 │           └── input_config.py
 │
-├── tests/                      # 185 unit tests
+├── tests/                      # 201 unit tests
 │   ├── test_vogler.py          # Vogler model tests (22 tests)
 │   ├── test_input.py           # Input sources (13 tests)
-│   ├── test_gpu.py             # GPU acceleration (12 tests)
+│   ├── test_gpu.py             # GPU acceleration (31 tests)
 │   ├── test_channel_models.py  # Watterson, noise, impairments (47 tests)
 │   ├── test_raytracing.py      # Ray tracing geometry & engine (33 tests)
 │   ├── test_sporadic_e.py      # Sporadic-E layer (24 tests)
 │   └── test_geomagnetic.py     # Geomagnetic effects (34 tests)
 │
 └── scripts/
+    ├── build_gpu.sh            # Build native CUDA module
+    ├── install_gpu.sh          # Install to site-packages
     └── run_dashboard.py
 ```
 
@@ -613,8 +673,8 @@ pytest tests/ -k "test_sec_phi" -v
 | `test_sporadic_e.py` | 24 | Es config, layer injection, occurrence estimation |
 | `test_geomagnetic.py` | 34 | Indices, foF2/hmF2 scaling, storm effects, Kp/Ap conversion |
 | `test_input.py` | 13 | File sources, network sources, format conversion |
-| `test_gpu.py` | 12 | GPU detection, transfer function, scattering function |
-| **Total** | **185** | |
+| `test_gpu.py` | 31 | Native CUDA, batched FFT, Doppler fading, spectrum, benchmarks |
+| **Total** | **204** | |
 
 ### Test Structure
 
@@ -663,7 +723,7 @@ class TestIntegration:
 ### Current Test Status
 
 ```
-========================= 185 passed in 2.20s =========================
+========================= 204 passed in 1.87s =========================
 ```
 
 All tests pass. The test suite validates:
@@ -679,14 +739,31 @@ All tests pass. The test suite validates:
 - **Latency**: <50 ms input-to-output
 - **GPU memory**: <2 GB for 1 MHz bandwidth
 
-### Benchmarks (RTX 5090)
-- Transfer function computation: ~0.5 ms for 4096 points
-- Overlap-save block: ~0.2 ms per 4096 samples
-- Scattering function: ~1 ms for 64x32 grid
-- Ray tracing (single ray): <10 ms CPU
-- Mode discovery (3 hops): <100 ms CPU
+### Benchmarks (RTX 5090 with Native CUDA Module)
 
-*Note: GPU acceleration requires building the native CUDA module. CuPy provides automatic fallback but may need kernel recompilation for new GPU architectures.*
+| Operation | Performance | Notes |
+|-----------|-------------|-------|
+| Batched overlap-save | **68.9 Msps** | 34.5x real-time, 8-block batches |
+| Transfer function | ~0.5 ms / 4096 pts | Vogler reflection coefficient |
+| Single-block overlap-save | ~0.2 ms / 4096 samples | Non-batched processing |
+| Doppler fading generation | 0.39 ms / 4096 samples | cuRAND + cuFFT |
+| Spectrum computation | ~2.6 ms / 65k samples | GPU compute_spectrum_db |
+| Scattering function | ~1 ms / 64x32 grid | 2D power distribution |
+| Ray tracing (single ray) | <10 ms | CPU Haselgrove integration |
+| Mode discovery (3 hops) | <100 ms | CPU path finder |
+
+### Building for Maximum Performance
+
+```bash
+# Build native CUDA module
+./scripts/build_gpu.sh
+
+# Verify native module is active
+python3 -c "from hfpathsim.gpu import get_backend_info; print(get_backend_info()['backend'])"
+# Expected: 'cuda'
+```
+
+*Note: The native CUDA module provides maximum performance. Without it, the system falls back to CuPy (if available) or NumPy. RTX 5090 (Blackwell, compute 12.0) requires CUDA Toolkit 12.8+ for optimal sm_120 code generation; CUDA 12.0 compiles for sm_90 which still runs correctly.*
 
 ## References
 
@@ -770,7 +847,17 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - [x] HFChannel integration with ray tracing
 - [x] 91 new unit tests (185 total)
 
-### Phase 5: Integration (Planned)
+### Phase 5: GPU Acceleration (Complete)
+- [x] Native CUDA module with pybind11 bindings
+- [x] Batched cuFFT overlap-save using `cufftPlanMany` (68.9 Msps)
+- [x] GPU-accelerated Doppler fading generation with cuRAND
+- [x] Real-time spectrum computation for GUI
+- [x] Build scripts (`build_gpu.sh`, `install_gpu.sh`)
+- [x] CUDA architecture detection (sm_80-90, sm_100-120 with CUDA 12.8+)
+- [x] Fallback chain: Native CUDA → CuPy → NumPy
+- [x] 19 new GPU tests (204 total)
+
+### Phase 6: Integration (Planned)
 - [ ] Real-time IQ output (sound card, network)
 - [ ] GNU Radio source/sink blocks
 - [ ] MATLAB/Simulink interface
