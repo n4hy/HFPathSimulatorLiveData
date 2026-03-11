@@ -1,6 +1,6 @@
 # HF Path Simulator
 
-A real-time HF (High Frequency) ionospheric channel simulator implementing the Vogler-Hoffmeyer Ionospheric Propagation Model (IPM) with GPU acceleration for RTX 5090.
+A real-time HF (High Frequency) ionospheric channel simulator implementing the Vogler-Hoffmeyer Ionospheric Propagation Model (IPM) and Watterson TDL model with GPU acceleration for RTX 5090.
 
 ## Overview
 
@@ -15,24 +15,13 @@ The simulator implements the Vogler-Hoffmeyer reflection coefficient model from 
 
 ## Features
 
-### Implemented (Phases 1-5)
+### Channel Models
 
 - **Vogler-Hoffmeyer IPM Core**
   - Complex gamma function computation for reflection coefficient R(ω)
   - Frequency-dependent amplitude and phase response
   - Group delay variation across bandwidth
-  - Multi-mode propagation (1F2, 2F2, E-layer)
-
-- **ITU-R F.1487 Channel Conditions**
-  - Quiet: τ=0.5ms, ν=0.1Hz (benign mid-latitude)
-  - Moderate: τ=2ms, ν=1Hz (typical daytime)
-  - Disturbed: τ=4ms, ν=2Hz (magnetic storm)
-  - Flutter: τ=7ms, ν=10Hz (high-latitude)
-
-- **Real-Time Signal Processing**
-  - Overlap-save convolution for continuous streaming
-  - 4096-point FFT blocks with configurable overlap
-  - Support for up to 2 Msps complex sample rates
+  - Multi-mode propagation (1F2, 2F2, E-layer, Es)
 
 - **Watterson Tapped Delay Line Model**
   - Classic Watterson HF channel model
@@ -40,6 +29,20 @@ The simulator implements the Vogler-Hoffmeyer reflection coefficient model from 
   - Independent Rayleigh/Rician fading per tap
   - Gaussian, flat, and Jakes Doppler spectrum shapes
   - CCIR Good/Moderate/Poor presets
+
+- **ITU-R F.1487 Channel Conditions**
+  - Quiet: τ=0.5ms, ν=0.1Hz (benign mid-latitude)
+  - Moderate: τ=2ms, ν=1Hz (typical daytime)
+  - Disturbed: τ=4ms, ν=2Hz (magnetic storm)
+  - Flutter: τ=7ms, ν=10Hz (high-latitude)
+
+### Signal Processing
+
+- **Real-Time Processing**
+  - Overlap-save convolution for continuous streaming
+  - 4096-point FFT blocks with configurable overlap
+  - Support for up to 2 Msps complex sample rates
+  - Full processing chain: Input → Channel → Noise → AGC → Limiter → Freq Offset → Output
 
 - **Noise Injection**
   - AWGN (Additive White Gaussian Noise)
@@ -54,7 +57,6 @@ The simulator implements the Vogler-Hoffmeyer reflection coefficient model from 
   - Signal limiting (hard, soft, cubic modes)
   - Frequency offset and drift simulation
   - Phase noise modeling
-  - Impairment chain for combined effects
 
 - **Channel Recording & Playback**
   - Record time-varying channel states
@@ -62,8 +64,10 @@ The simulator implements the Vogler-Hoffmeyer reflection coefficient model from 
   - Playback with interpolation
   - Reproducible testing scenarios
 
-- **Physics-Based Ray Tracing (Phase 4)**
-  - Spherical Earth geometry with computed sec(φ) replacing hardcoded approximations
+### Ionospheric Modeling
+
+- **Physics-Based Ray Tracing**
+  - Spherical Earth geometry with computed sec(φ)
   - 2D Haselgrove ray equation integration
   - Multi-hop propagation mode discovery (1F2, 2F2, 3F2, 1E, Es)
   - IonosphereProfile with electron density Ne(h) arrays
@@ -83,45 +87,77 @@ The simulator implements the Vogler-Hoffmeyer reflection coefficient model from 
   - Polar blackout detection
   - Storm phase classification (initial, main, recovery)
 
-- **PyQt6 Dashboard**
-  - Channel frequency response |H(f)| display
-  - Impulse response |h(t)| visualization
-  - Phase response and group delay plots
-  - Scattering function S(τ,ν) 2D intensity display
-  - Input/output spectrum analyzers
-  - Real-time parameter controls
-
-- **Input Sources**
-  - File playback: WAV, SigMF, raw binary (complex64, int16, int8)
-  - Network streams: TCP, UDP, ZeroMQ
-  - SDR support via SoapySDR (RTL-SDR, HackRF, USRP, etc.)
-
 - **Ionospheric Data Sources**
   - Manual parameter entry
   - GIRO/DIDBase real-time ionosonde data
   - IRI-2020 model integration (optional)
 
-- **GPU Acceleration (Phase 5)**
-  - Native CUDA module with cuFFT for maximum performance
-  - Batched overlap-save convolution using `cufftPlanMany` (68.9 Msps throughput)
-  - GPU-accelerated Doppler fading generation with cuRAND
-  - Real-time spectrum computation for GUI
-  - CuPy fallback with automatic kernel compilation
-  - NumPy CPU fallback for compatibility
-  - Build scripts for easy compilation (`scripts/build_gpu.sh`)
-  - Designed for RTX 5090 (Blackwell), supports sm_80-90 architectures
+### Input Sources
 
-### Planned (Future Phases)
+- File playback: WAV, SigMF, raw binary (complex64, int16, int8)
+- Network streams: TCP, UDP, ZeroMQ
+- SDR support via SoapySDR (RTL-SDR, HackRF, USRP, etc.)
 
-- **Phase 6**: Real-time IQ output, GNU Radio integration
+### GPU Acceleration
+
+- Native CUDA module with cuFFT for maximum performance
+- Batched overlap-save convolution using `cufftPlanMany` (68.9 Msps throughput)
+- GPU-accelerated Doppler fading generation with cuRAND
+- Real-time spectrum computation for GUI
+- CuPy fallback with automatic kernel compilation
+- NumPy CPU fallback for compatibility
+- Designed for RTX 5090 (Blackwell), supports sm_80-90 architectures
+
+### PyQt6 Dashboard GUI
+
+Full-featured graphical interface with tabbed controls:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│ [Menu: File | View | Tools | Help]                                  │
+├─────────────────────────────────────────────────────────────────────┤
+│ [Toolbar: Start/Stop | Preset Dropdown | GPU Status]                │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  ┌──────────────────────┐  ┌──────────────────────────────────────┐ │
+│  │ Channel Display      │  │ Scattering Function S(τ,ν)          │ │
+│  │ (Freq/Impulse/Phase) │  │ (Delay-Doppler 2D intensity)        │ │
+│  ├──────────────────────┤  ├──────────────────────────────────────┤ │
+│  │ Input Spectrum       │  │ Output Spectrum                      │ │
+│  │ (Real-time FFT)      │  │ (Real-time FFT)                      │ │
+│  └──────────────────────┘  └──────────────────────────────────────┘ │
+│                                                                      │
+├─────────────────────────────────────────────────────────────────────┤
+│ [Input] [Channel] [Noise] [Impairments] [Ionosphere] [Recording]    │
+│ ┌─────────────────────────────────────────────────────────────────┐ │
+│ │ (Tab content - varies by selected tab)                          │ │
+│ └─────────────────────────────────────────────────────────────────┘ │
+├─────────────────────────────────────────────────────────────────────┤
+│ [Status Bar: GPU | Rate | SNR | Mode Count]                         │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**Dashboard Tabs:**
+
+| Tab | Features |
+|-----|----------|
+| **Input** | File/Network/SDR source selection, sample rate, format |
+| **Channel** | Vogler/Watterson model selection, ITU presets, ionospheric params, tap config |
+| **Noise** | AWGN, atmospheric, man-made, impulse noise with SNR control |
+| **Impairments** | AGC with gain meter, limiter with modes, frequency offset/drift |
+| **Ionosphere** | Ray tracing, Sporadic-E, geomagnetic indices, GIRO/IRI data sources |
+| **Recording** | Channel state recording/playback with metadata |
+
+---
 
 ## Installation
 
 ### Prerequisites
 
 - Python 3.11+
+- PyQt6 and pyqtgraph
+- NumPy, SciPy
 - NVIDIA GPU with CUDA 12.x (optional, for GPU acceleration)
-- Qt6 libraries
 
 ### Quick Start
 
@@ -134,11 +170,22 @@ cd HFPathSimulatorLiveData
 python -m venv .hfpathsim
 source .hfpathsim/bin/activate
 
-# Install the package
+# Install the package with all dependencies
 pip install -e .
 
 # Launch the dashboard
 python -m hfpathsim
+```
+
+### Dependencies
+
+The package automatically installs these dependencies:
+
+```
+numpy>=1.24.0
+scipy>=1.10.0
+PyQt6>=6.5.0
+pyqtgraph>=0.13.0
 ```
 
 ### Optional Dependencies
@@ -150,19 +197,93 @@ pip install soapysdr
 # For IRI-2020 ionospheric model
 pip install iri2016
 
+# For HDF5 recording format
+pip install h5py
+
+# For ZeroMQ network input
+pip install pyzmq
+
+# For GPU acceleration (CuPy fallback)
+pip install cupy-cuda12x
+
 # For development/testing
-pip install pytest pytest-qt
+pip install pytest pytest-qt pytest-cov
 ```
+
+### Building Native CUDA Module (Maximum Performance)
+
+```bash
+# Requires CUDA Toolkit 12.x
+./scripts/build_gpu.sh
+
+# Verify installation
+python -c "from hfpathsim.gpu import get_backend_info; print(get_backend_info())"
+# Expected: {'backend': 'cuda', 'native_module': True, ...}
+```
+
+---
 
 ## Usage
 
-### Launch Dashboard
+### Launch Dashboard GUI
 
 ```bash
 python -m hfpathsim
 ```
 
-### Programmatic API
+The dashboard opens with the full tabbed interface. Use the toolbar preset selector to quickly switch between ITU channel conditions.
+
+### GUI Tab Guide
+
+#### Input Tab
+Configure the signal source:
+- **File**: Browse for IQ files (WAV, SigMF, raw), set sample rate and format
+- **Network**: TCP/UDP/ZMQ streaming with host:port configuration
+- **SDR**: Scan for SoapySDR devices, set center frequency and gain
+
+#### Channel Tab
+Configure the channel model:
+- **Model Selection**: Choose Vogler IPM or Watterson TDL
+- **ITU Preset**: Quick select Quiet/Moderate/Disturbed/Flutter
+- **Ionospheric**: Set foF2, hmF2, foE, hmE
+- **Channel Stats**: Delay spread, Doppler spread, frequency, path length
+- **Modes**: Enable/disable propagation modes (1F2, 2F2, 1E, Es)
+- **Watterson Taps**: Add/remove taps, configure delay/amplitude/Doppler per tap
+
+#### Noise Tab
+Configure noise injection:
+- **Master SNR**: Slider control for overall signal-to-noise ratio
+- **AWGN**: Enable white Gaussian noise
+- **Atmospheric**: ITU-R P.372 model with season/time/latitude
+- **Man-Made**: Environment selection (city/residential/rural)
+- **Impulse**: Rate, amplitude, and duration controls
+
+#### Impairments Tab
+Configure receiver impairments:
+- **AGC**: Mode (slow/medium/fast/manual), target level, max gain, attack/release
+- **Limiter**: Threshold, mode (hard/soft/cubic), attack/release
+- **Frequency Offset**: Static offset, drift rate, phase noise level
+- **Real-time meters**: AGC gain and limiter gain reduction displays
+
+#### Ionosphere Tab
+Configure ionospheric modeling:
+- **Data Source**: Manual entry, GIRO real-time data, or IRI-2020 model
+- **Path Geometry**: TX/RX coordinates with distance/bearing calculation
+- **Ray Tracing**: Enable/disable, max hops, discovered modes table
+- **Sporadic-E**: Enable Es layer with presets and foEs/hmEs controls
+- **Geomagnetic**: F10.7, Kp, Dst indices with presets and storm phase
+
+#### Recording Tab
+Record and playback channel states:
+- **Record**: Start/stop, snapshot rate, max duration, format selection
+- **Playback**: Load file, play/pause/stop, playback rate, loop option
+- **Metadata**: Description and tags for recordings
+
+---
+
+## Programmatic API
+
+### Basic Channel Processing
 
 ```python
 from hfpathsim.core.parameters import VoglerParameters, ITUCondition
@@ -184,7 +305,74 @@ print(f"Delay spread: {params.delay_spread_ms} ms")
 print(f"Doppler spread: {params.doppler_spread_hz} Hz")
 ```
 
-### Ray Tracing with Computed Geometry
+### Watterson Channel Model
+
+```python
+from hfpathsim.core.watterson import WattersonChannel, WattersonConfig, WattersonTap, DopplerSpectrum
+from hfpathsim.core.parameters import ITUCondition
+import numpy as np
+
+# Create from ITU preset
+config = WattersonConfig.from_itu_condition(ITUCondition.MODERATE)
+channel = WattersonChannel(config, seed=42)
+
+# Or create custom configuration
+config = WattersonConfig(
+    taps=[
+        WattersonTap(delay_ms=0.0, amplitude=1.0, doppler_spread_hz=1.0),
+        WattersonTap(delay_ms=2.0, amplitude=0.7, doppler_spread_hz=1.0),
+        WattersonTap(delay_ms=4.0, amplitude=0.3, doppler_spread_hz=2.0,
+                     is_specular=True, k_factor_db=6.0),  # Rician fading
+    ],
+    sample_rate_hz=2e6,
+)
+channel = WattersonChannel(config)
+
+# Process signal
+output = channel.process_block(np.random.randn(4096).astype(np.complex64))
+```
+
+### Full Processing Chain
+
+```python
+from hfpathsim.core.channel import HFChannel
+from hfpathsim.core.watterson import WattersonChannel, WattersonConfig
+from hfpathsim.core.noise import NoiseGenerator, NoiseConfig, ManMadeEnvironment
+from hfpathsim.core.impairments import AGC, AGCConfig, AGCMode, Limiter, LimiterConfig
+from hfpathsim.core.impairments import FrequencyOffset, FrequencyOffsetConfig
+from hfpathsim.core.parameters import VoglerParameters, ITUCondition
+import numpy as np
+
+# Setup components
+params = VoglerParameters.from_itu_condition(ITUCondition.MODERATE)
+channel = HFChannel(params, use_gpu=True)
+
+noise = NoiseGenerator(NoiseConfig(
+    snr_db=20.0,
+    enable_atmospheric=True,
+    frequency_mhz=14.0,
+    enable_manmade=True,
+    environment=ManMadeEnvironment.RESIDENTIAL,
+))
+
+agc = AGC(AGCConfig(mode=AGCMode.MEDIUM, target_level_db=-10.0))
+limiter = Limiter(LimiterConfig(threshold_db=-3.0, mode="soft"))
+freq_offset = FrequencyOffset(FrequencyOffsetConfig(offset_hz=25.0, drift_rate_hz_per_sec=0.1))
+
+# Process signal through chain
+input_signal = np.random.randn(4096).astype(np.complex64) + 1j * np.random.randn(4096).astype(np.complex64)
+
+output = channel.process(input_signal)
+output = noise.add_noise(output)
+output = agc.process_block(output)
+output = limiter.process(output)
+output = freq_offset.process(output)
+
+print(f"AGC gain: {agc.current_gain_db:.1f} dB")
+print(f"Limiter GR: {limiter.gain_reduction_db:.1f} dB")
+```
+
+### Ray Tracing
 
 ```python
 from hfpathsim.core.raytracing import (
@@ -197,19 +385,17 @@ from hfpathsim.core.raytracing import (
 # Create ionosphere profile
 profile = create_simple_profile(foF2=7.5, hmF2=300.0, foE=3.0, hmE=110.0)
 
-# Find viable propagation modes for a path
-# Washington DC to London
+# Find viable propagation modes for a path (Washington DC to London)
 modes = find_propagation_modes(
     profile,
-    tx_lat=38.9, tx_lon=-77.0,   # Washington DC
-    rx_lat=51.5, rx_lon=-0.1,    # London
+    tx_lat=38.9, tx_lon=-77.0,
+    rx_lat=51.5, rx_lon=-0.1,
     frequency_mhz=14.0,
     max_hops=3,
 )
 
 for mode in modes:
-    print(f"{mode.name}: delay={mode.group_delay_ms:.1f}ms, "
-          f"amplitude={mode.relative_amplitude:.2f}")
+    print(f"{mode.name}: delay={mode.group_delay_ms:.1f}ms, amplitude={mode.relative_amplitude:.2f}")
 
 # Get physically-computed sec(φ) for MUF calculation
 path_km = great_circle_distance(38.9, -77.0, 51.5, -0.1)
@@ -218,46 +404,12 @@ muf = 7.5 * sec_phi  # foF2 * sec(φ)
 print(f"Path: {path_km:.0f} km, sec(φ): {sec_phi:.2f}, MUF: {muf:.1f} MHz")
 ```
 
-### Channel with Ray Tracing Integration
-
-```python
-from hfpathsim.core.channel import HFChannel, RayTracingConfig
-from hfpathsim.core.parameters import VoglerParameters
-
-# Enable physics-based ray tracing
-ray_config = RayTracingConfig(
-    enabled=True,
-    tx_lat=38.9, tx_lon=-77.0,
-    rx_lat=51.5, rx_lon=-0.1,
-    max_hops=3,
-    use_sporadic_e=True,
-    use_geomagnetic=True,
-)
-
-channel = HFChannel(
-    params=VoglerParameters(frequency_mhz=14.0),
-    use_ray_tracing=True,
-    ray_config=ray_config,
-)
-
-# Enable sporadic-E layer
-channel.enable_sporadic_e(foEs=8.0, hmEs=105.0)
-
-# Apply geomagnetic storm conditions
-channel.set_geomagnetic_indices(f10_7=150, kp=5, dst=-80)
-
-# Get MUF for current conditions
-muf = channel.get_muf("F2")
-print(f"MUF: {muf:.1f} MHz")
-```
-
-### Sporadic-E Simulation
+### Sporadic-E Layer
 
 ```python
 from hfpathsim.iono.sporadic_e import (
     SporadicELayer, SporadicEConfig,
-    estimate_es_occurrence, estimate_foEs,
-    create_es_from_preset,
+    estimate_es_occurrence, create_es_from_preset,
 )
 from hfpathsim.core.raytracing import create_simple_profile
 
@@ -278,14 +430,10 @@ es_muf = es_layer.get_muf(path_km=1000.0)
 print(f"Es MUF: {es_muf:.1f} MHz")
 ```
 
-### Geomagnetic Storm Effects
+### Geomagnetic Effects
 
 ```python
-from hfpathsim.iono.geomagnetic import (
-    GeomagneticIndices, GeomagneticModulator,
-    classify_storm_phase,
-)
-from hfpathsim.core.raytracing import create_simple_profile
+from hfpathsim.iono.geomagnetic import GeomagneticIndices, GeomagneticModulator, classify_storm_phase
 
 # Create storm conditions
 indices = GeomagneticIndices.disturbed()  # Kp=5, Dst=-80
@@ -309,140 +457,53 @@ phase = classify_storm_phase(dst=-80, dst_rate=-15)
 print(f"Storm phase: {phase}")
 ```
 
-### File Playback
+### GIRO Real-Time Data
 
 ```python
-from hfpathsim.input.file import FileInputSource
-from hfpathsim.core.channel import HFChannel
+from hfpathsim.iono.giro import GIROClient
 
-# Load IQ file
-source = FileInputSource("recording.wav", loop=True)
-source.open()
+# Connect to Boulder ionosonde
+client = GIROClient("BC840")
+ionogram = client.fetch_latest()
 
-channel = HFChannel()
+if ionogram:
+    print(f"foF2: {ionogram.foF2:.1f} MHz")
+    print(f"hmF2: {ionogram.hmF2:.0f} km")
+    print(f"Confidence: {ionogram.confidence:.2f}")
 
-while True:
-    samples = source.read(4096)
-    if samples is None:
-        break
-    output = channel.process(samples)
-    # ... do something with output
-```
-
-### Watterson Channel Model
-
-```python
-from hfpathsim.core.watterson import WattersonChannel, WattersonConfig
-from hfpathsim.core.parameters import ITUCondition
-import numpy as np
-
-# Create channel from ITU condition preset
-config = WattersonConfig.from_itu_condition(ITUCondition.MODERATE)
-channel = WattersonChannel(config, seed=42)
-
-# Or use CCIR presets
-config = WattersonConfig.ccir_poor()  # 2ms delay, 1Hz Doppler
-channel = WattersonChannel(config)
-
-# Process signal
-input_signal = np.random.randn(4096).astype(np.complex64)
-output = channel.process_block(input_signal)
-
-# Get impulse response for visualization
-h = channel.get_impulse_response(length=256)
-```
-
-### Noise Injection
-
-```python
-from hfpathsim.core.noise import NoiseGenerator, NoiseConfig, ManMadeEnvironment
-import numpy as np
-
-# Configure noise sources
-config = NoiseConfig(
-    snr_db=15.0,
-    enable_atmospheric=True,
-    frequency_mhz=7.0,  # 40m band
-    season="summer",
-    time_of_day="night",
-    enable_manmade=True,
-    environment=ManMadeEnvironment.RESIDENTIAL,
-    enable_impulse=True,
-    impulse_rate_hz=5.0,
-)
-
-noise_gen = NoiseGenerator(config, seed=42)
-
-# Add noise to signal
-signal = np.ones(10000, dtype=np.complex64)
-noisy_signal = noise_gen.add_noise(signal, normalize=True)
-```
-
-### AGC and Impairments
-
-```python
-from hfpathsim.core.impairments import (
-    AGC, AGCConfig, AGCMode,
-    Limiter, LimiterConfig,
-    FrequencyOffset, FrequencyOffsetConfig,
-    ImpairmentChain,
-)
-from hfpathsim.core.noise import NoiseGenerator, NoiseConfig
-
-# Create AGC
-agc = AGC(AGCConfig(
-    mode=AGCMode.FAST,
-    target_level_db=-10.0,
-    max_gain_db=40.0,
-))
-
-# Create limiter
-limiter = Limiter(LimiterConfig(
-    threshold_db=-3.0,
-    mode="soft",
-))
-
-# Create frequency offset
-freq_offset = FrequencyOffset(FrequencyOffsetConfig(
-    offset_hz=25.0,
-    drift_rate_hz_per_sec=0.5,
-))
-
-# Combine in impairment chain
-chain = ImpairmentChain(
-    agc=agc,
-    limiter=limiter,
-    freq_offset=freq_offset,
-    noise_generator=NoiseGenerator(NoiseConfig(snr_db=20.0)),
-)
-
-# Process signal through entire chain
-output = chain.process(input_signal)
-print(chain.get_status())  # {'agc_gain_db': 15.2, 'limiter_gr_db': -1.5, ...}
+# Convert to Vogler parameters
+params = client.to_vogler_params(frequency_mhz=14.0, path_km=2000.0)
 ```
 
 ### Channel Recording and Playback
 
 ```python
-from hfpathsim.core.recording import ChannelPlayer, create_test_recording
+from hfpathsim.core.recording import ChannelRecorder, ChannelPlayer, create_test_recording
+from hfpathsim.core.channel import HFChannel
+from hfpathsim.core.parameters import VoglerParameters, ITUCondition
 
-# Create synthetic test recording
-player = create_test_recording(
-    duration_sec=10.0,
-    snapshot_rate_hz=10.0,
-    condition="moderate",
-)
+# Record channel states
+channel = HFChannel(VoglerParameters.from_itu_condition(ITUCondition.MODERATE))
+recorder = ChannelRecorder(channel, snapshot_rate_hz=10.0, max_duration_sec=60.0)
 
-# Iterate through recorded channel states
+recorder.start()
+# ... channel processing happens, states are captured ...
+recorder.stop()
+recorder.save("recording.npz")
+
+# Playback recorded states
+player = ChannelPlayer()
+player.load("recording.npz")
+
+print(f"Duration: {player.duration:.1f} sec")
+print(f"Snapshots: {player.num_snapshots}")
+
 for H in player.iterate(rate_hz=20.0, loop=False):
-    # Apply H to your signal: Y = X * H in frequency domain
+    # Apply transfer function H to your signal
     pass
-
-# Get channel state at specific time
-H = player.get_at_time(5.0, interpolate=True)
 ```
 
-### GPU Acceleration (Phase 5)
+### GPU Acceleration
 
 ```python
 from hfpathsim.gpu import (
@@ -483,92 +544,145 @@ fading = generate_doppler_fading(
 power_db = compute_spectrum_db(input_signal[:4096], reference=1.0)
 ```
 
-### Building the Native CUDA Module
+### File Input
 
-```bash
-# Build the GPU module (requires CUDA Toolkit 12.x)
-./scripts/build_gpu.sh
+```python
+from hfpathsim.input.file import FileInputSource
+from hfpathsim.input.base import InputFormat
 
-# Verify installation
-python3 -c "from hfpathsim.gpu import get_backend_info; print(get_backend_info())"
+# Load various formats
+source = FileInputSource(
+    "recording.wav",  # or .sigmf-data, .raw, .bin, .cf32
+    sample_rate_hz=2e6,  # Required for raw files
+    input_format=InputFormat.COMPLEX64,  # Auto-detected for WAV/SigMF
+    loop=True,
+)
 
-# Expected output with native module:
-# {'backend': 'cuda', 'native_module': True, ...}
+source.open()
+while True:
+    samples = source.read(4096)
+    if samples is None:
+        break
+    # Process samples...
+source.close()
 ```
+
+### Network Input
+
+```python
+from hfpathsim.input.network import NetworkInputSource, NetworkProtocol
+
+# TCP client
+source = NetworkInputSource(
+    host="192.168.1.100",
+    port=5000,
+    protocol=NetworkProtocol.TCP,
+    sample_rate_hz=2e6,
+)
+
+# UDP receiver
+source = NetworkInputSource(
+    host="0.0.0.0",
+    port=5000,
+    protocol=NetworkProtocol.UDP,
+    sample_rate_hz=2e6,
+)
+
+# ZeroMQ subscriber
+source = NetworkInputSource(
+    host="localhost",
+    port=5555,
+    protocol=NetworkProtocol.ZMQ_SUB,
+    sample_rate_hz=2e6,
+)
+```
+
+---
 
 ## Project Structure
 
 ```
-hfpathsim/
-├── pyproject.toml              # Package configuration
-├── README.md                   # This file
+HFPathSimulatorLiveData/
+├── pyproject.toml                 # Package configuration
+├── README.md                      # This file
+├── LICENSE                        # MIT License
 │
 ├── src/hfpathsim/
 │   ├── __init__.py
-│   ├── __main__.py             # Entry point
+│   ├── __main__.py                # Entry point (python -m hfpathsim)
 │   │
-│   ├── core/                   # Core simulation
-│   │   ├── parameters.py       # VoglerParameters, ITUCondition, PropagationMode
-│   │   ├── channel.py          # HFChannel with ray tracing integration
-│   │   ├── vogler_ipm.py       # Vogler model interface
-│   │   ├── watterson.py        # Watterson TDL model
-│   │   ├── noise.py            # Noise generators (AWGN, atmospheric, etc.)
-│   │   ├── impairments.py      # AGC, limiter, frequency offset
-│   │   ├── recording.py        # Channel state recording/playback
+│   ├── core/                      # Core simulation
+│   │   ├── parameters.py          # VoglerParameters, ITUCondition, PropagationMode
+│   │   ├── channel.py             # HFChannel with processing chain
+│   │   ├── vogler_ipm.py          # Vogler reflection coefficient model
+│   │   ├── watterson.py           # Watterson TDL model
+│   │   ├── noise.py               # Noise generators (AWGN, atmospheric, etc.)
+│   │   ├── impairments.py         # AGC, limiter, frequency offset
+│   │   ├── recording.py           # Channel state recording/playback
 │   │   │
-│   │   └── raytracing/         # Physics-based ray tracing (Phase 4)
-│   │       ├── __init__.py     # Module exports
-│   │       ├── geometry.py     # Spherical Earth, sec_phi, great circle
-│   │       ├── ionosphere.py   # IonosphereProfile, Ne(h), refractive index
-│   │       ├── ray_engine.py   # 2D Haselgrove equations, RayPath
-│   │       └── path_finder.py  # Multi-hop mode discovery
+│   │   └── raytracing/            # Physics-based ray tracing
+│   │       ├── __init__.py        # Module exports
+│   │       ├── geometry.py        # Spherical Earth, sec_phi, great circle
+│   │       ├── ionosphere.py      # IonosphereProfile, Ne(h), refractive index
+│   │       ├── ray_engine.py      # 2D Haselgrove equations, RayPath
+│   │       └── path_finder.py     # Multi-hop mode discovery
 │   │
-│   ├── gpu/                    # GPU acceleration
-│   │   ├── __init__.py         # Python interface
-│   │   ├── bindings.cpp        # pybind11 bindings
-│   │   ├── CMakeLists.txt      # CUDA build
+│   ├── gpu/                       # GPU acceleration
+│   │   ├── __init__.py            # Python interface with fallback chain
+│   │   ├── bindings.cpp           # pybind11 CUDA bindings
+│   │   ├── CMakeLists.txt         # CUDA build configuration
 │   │   └── kernels/
 │   │       ├── vogler_transfer.cu
 │   │       ├── fading.cu
 │   │       └── signal_proc.cu
 │   │
-│   ├── input/                  # Input sources
-│   │   ├── base.py             # InputSource ABC
-│   │   ├── file.py             # File playback
-│   │   ├── network.py          # TCP/UDP/ZMQ
-│   │   └── sdr.py              # SoapySDR
+│   ├── input/                     # Input sources
+│   │   ├── base.py                # InputSource ABC, InputFormat
+│   │   ├── file.py                # File playback (WAV, SigMF, raw)
+│   │   ├── network.py             # TCP/UDP/ZMQ streaming
+│   │   └── sdr.py                 # SoapySDR interface
 │   │
-│   ├── iono/                   # Ionospheric data and effects
-│   │   ├── manual.py           # Manual entry
-│   │   ├── giro.py             # GIRO client
-│   │   ├── iri.py              # IRI-2020 with to_ionosphere_profile()
-│   │   ├── sporadic_e.py       # Sporadic-E layer modeling (Phase 4)
-│   │   └── geomagnetic.py      # Geomagnetic effects (Phase 4)
+│   ├── iono/                      # Ionospheric data and effects
+│   │   ├── manual.py              # Manual parameter entry
+│   │   ├── giro.py                # GIRO/DIDBase client
+│   │   ├── iri.py                 # IRI-2020 model wrapper
+│   │   ├── sporadic_e.py          # Sporadic-E layer modeling
+│   │   └── geomagnetic.py         # Geomagnetic effects (F10.7, Kp, Dst)
 │   │
-│   └── gui/                    # PyQt6 interface
-│       ├── main_window.py
-│       ├── resources/style.qss
-│       └── widgets/
-│           ├── channel_display.py
-│           ├── scattering.py
-│           ├── spectrum.py          # GPU-accelerated spectrum display
-│           ├── parameters.py
-│           └── input_config.py
+│   └── gui/                       # PyQt6 dashboard
+│       ├── __init__.py            # Exports MainWindow
+│       ├── main_window.py         # Main application window
+│       │
+│       └── widgets/               # GUI components
+│           ├── __init__.py        # Widget exports
+│           ├── control_tabs.py    # QTabWidget container for all controls
+│           ├── channel_display.py # H(f), h(t), phase, group delay plots
+│           ├── scattering.py      # S(τ,ν) 2D intensity display
+│           ├── spectrum.py        # Real-time FFT spectrum analyzer
+│           ├── input_config.py    # Input source configuration
+│           ├── channel_panel.py   # Vogler/Watterson channel controls
+│           ├── noise_panel.py     # Noise injection controls
+│           ├── impairments_panel.py # AGC/limiter/freq offset controls
+│           ├── ionosphere_panel.py  # Ray tracing, Es, geomagnetic controls
+│           ├── recording_panel.py # Record/playback controls
+│           └── parameters.py      # Legacy parameter panel (deprecated)
 │
-├── tests/                      # 201 unit tests
-│   ├── test_vogler.py          # Vogler model tests (22 tests)
-│   ├── test_input.py           # Input sources (13 tests)
-│   ├── test_gpu.py             # GPU acceleration (31 tests)
-│   ├── test_channel_models.py  # Watterson, noise, impairments (47 tests)
-│   ├── test_raytracing.py      # Ray tracing geometry & engine (33 tests)
-│   ├── test_sporadic_e.py      # Sporadic-E layer (24 tests)
-│   └── test_geomagnetic.py     # Geomagnetic effects (34 tests)
+├── tests/                         # Unit tests (204+ tests)
+│   ├── test_vogler.py             # Vogler model tests
+│   ├── test_channel_models.py     # Watterson, noise, impairments
+│   ├── test_raytracing.py         # Ray tracing geometry & engine
+│   ├── test_sporadic_e.py         # Sporadic-E layer
+│   ├── test_geomagnetic.py        # Geomagnetic effects
+│   ├── test_input.py              # Input sources
+│   └── test_gpu.py                # GPU acceleration
 │
 └── scripts/
-    ├── build_gpu.sh            # Build native CUDA module
-    ├── install_gpu.sh          # Install to site-packages
-    └── run_dashboard.py
+    ├── build_gpu.sh               # Build native CUDA module
+    ├── install_gpu.sh             # Install to site-packages
+    └── run_dashboard.py           # Alternative launcher
 ```
+
+---
 
 ## Technical Background
 
@@ -588,9 +702,23 @@ Where:
 - **t₀** - Base propagation delay
 - **Γ** - Complex gamma function
 
-### Oblique Incidence Geometry (Phase 4)
+### Watterson Tapped Delay Line
 
-The simulator now computes the secant of the angle of incidence using spherical Earth geometry:
+The Watterson model represents the channel as a sum of independently fading taps:
+
+```
+h(t,τ) = Σᵢ aᵢ(t) · δ(τ - τᵢ)
+```
+
+Each tap aᵢ(t) is a complex Gaussian process with specified Doppler spectrum shape (Gaussian, flat, or Jakes). For Rician fading, a specular component is added:
+
+```
+aᵢ(t) = √(K/(K+1)) · e^(jφ) + √(1/(K+1)) · g(t)
+```
+
+### Oblique Incidence Geometry
+
+The secant of the angle of incidence is computed using spherical Earth geometry:
 
 ```
 sec(φ) = 1 / cos(φ)
@@ -600,23 +728,22 @@ where sin(φ) = R·sin(β) / slant_range
       slant_range = √(R² + (R+h)² - 2R(R+h)cos(β))
 ```
 
-This replaces the previous hardcoded `sec_phi = 3.0` with physically accurate values based on actual path length and layer height.
+This enables accurate MUF calculations: `MUF = foF2 × sec(φ)`
 
 ### Channel Statistics
 
-The simulator implements the Watterson/Gaussian scatter model for time-varying fading:
+The scattering function S(τ,ν) describes the power distribution in delay-Doppler space:
 
-- **Delay spread (τ)**: Multipath delay dispersion, causing frequency-selective fading
-- **Doppler spread (ν)**: Time-variation rate, causing temporal fading
-
-The scattering function S(τ,ν) describes the power distribution:
 ```
 S(τ,ν) = exp(-τ/τ_rms) × exp(-(ν/ν_rms)²)
 ```
 
+- **Delay spread (τ)**: Multipath delay dispersion, causing frequency-selective fading
+- **Doppler spread (ν)**: Time-variation rate, causing temporal fading
+
 ### Geomagnetic Effects
 
-The simulator models space weather impacts on HF propagation:
+Space weather impacts on HF propagation:
 
 - **F10.7 scaling**: `foF2 ∝ √(1 + 0.014·(F10.7 - 100))`
 - **Storm depression**: `Δ foF2 = 0.05·Dst·cos²(lat)` (Dst negative during storms)
@@ -628,6 +755,8 @@ The simulator models space weather impacts on HF propagation:
 |-----------|--------|---------------|-------------|
 | foF2 | foF2 | 3-15 MHz | F2 layer critical frequency |
 | hmF2 | hmF2 | 200-400 km | F2 layer peak height |
+| foE | foE | 1-4 MHz | E layer critical frequency |
+| hmE | hmE | 90-130 km | E layer peak height |
 | foEs | foEs | 2-15 MHz | Sporadic-E critical frequency |
 | Delay spread | τ | 0.5-7 ms | RMS multipath delay |
 | Doppler spread | ν | 0.1-10 Hz | Two-sided Doppler bandwidth |
@@ -636,108 +765,81 @@ The simulator models space weather impacts on HF propagation:
 | Kp | Kp | 0-9 | Geomagnetic activity index |
 | Dst | Dst | -500 to +50 nT | Storm-time index |
 
-## Testing
+---
 
-The project includes comprehensive unit tests covering all modules.
+## Testing
 
 ### Running Tests
 
 ```bash
 # Run all tests
-pytest tests/ -v
+PYTHONPATH=src pytest tests/ -v
 
-# Run with summary
-pytest tests/ -v --tb=short
+# Run with coverage
+PYTHONPATH=src pytest tests/ --cov=hfpathsim --cov-report=html
 
-# Run specific test modules
-pytest tests/test_raytracing.py -v      # Ray tracing tests
-pytest tests/test_sporadic_e.py -v      # Sporadic-E tests
-pytest tests/test_geomagnetic.py -v     # Geomagnetic tests
-pytest tests/test_vogler.py -v          # Vogler model tests
-pytest tests/test_channel_models.py -v  # Channel model tests
-
-# Run with coverage report
-pytest tests/ --cov=hfpathsim --cov-report=html
+# Run specific modules
+PYTHONPATH=src pytest tests/test_vogler.py -v
+PYTHONPATH=src pytest tests/test_raytracing.py -v
+PYTHONPATH=src pytest tests/test_channel_models.py -v
 
 # Run tests matching a pattern
-pytest tests/ -k "test_sec_phi" -v
+PYTHONPATH=src pytest tests/ -k "test_sec_phi" -v
 ```
 
-### Test Categories
+### Latest Test Results
+
+```
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.0.2
+collected 203 items
+
+tests/test_channel_models.py ........................................     [ 23%]
+tests/test_geomagnetic.py ................................                [ 39%]
+tests/test_gpu.py ..............................                          [ 54%]
+tests/test_input.py .............                                         [ 60%]
+tests/test_raytracing.py .................................                [ 77%]
+tests/test_sporadic_e.py ........................                         [ 89%]
+tests/test_vogler.py ......................                               [100%]
+
+============================= 203 passed in 2.27s ==============================
+```
+
+### Test Summary
 
 | Test File | Tests | Coverage |
 |-----------|-------|----------|
-| `test_vogler.py` | 22 | Vogler parameters, HFChannel, reflection coefficients |
 | `test_channel_models.py` | 47 | Watterson, noise, AGC, limiter, impairments, recording |
+| `test_geomagnetic.py` | 32 | Indices, foF2/hmF2 scaling, storm effects, Kp/Ap conversion |
+| `test_gpu.py` | 30 | Native CUDA, batched FFT, Doppler fading, spectrum, benchmarks |
+| `test_input.py` | 13 | File sources, network sources, format conversion |
 | `test_raytracing.py` | 33 | Geometry, ionosphere profiles, ray engine, path finder |
 | `test_sporadic_e.py` | 24 | Es config, layer injection, occurrence estimation |
-| `test_geomagnetic.py` | 34 | Indices, foF2/hmF2 scaling, storm effects, Kp/Ap conversion |
-| `test_input.py` | 13 | File sources, network sources, format conversion |
-| `test_gpu.py` | 31 | Native CUDA, batched FFT, Doppler fading, spectrum, benchmarks |
-| **Total** | **204** | |
+| `test_vogler.py` | 22 | Vogler parameters, HFChannel, reflection coefficients |
+| **Total** | **203** | **All passing** |
 
-### Test Structure
+### Test Categories
 
-Each test module follows a consistent structure:
+**Unit Tests** - Test individual components in isolation:
+- Parameter validation and defaults
+- Mathematical computations (gamma functions, geometry)
+- Signal processing correctness
+- Configuration handling
 
-```python
-class TestGeometry:
-    """Tests for geometry module."""
+**Integration Tests** - Test component interactions:
+- Channel processing pipeline
+- Ray tracing with ionosphere profiles
+- Geomagnetic modulation of channel parameters
+- GPU/CPU fallback behavior
 
-    def test_great_circle_distance_known_path(self):
-        """Test known great circle distance: NYC to London ~5570 km."""
-        d = great_circle_distance(40.7128, -74.0060, 51.5074, -0.1278)
-        assert 5500 < d < 5700
+**Performance Tests** - Verify throughput requirements:
+- GPU batched FFT throughput (68.9 Msps achieved)
+- Streaming processing latency
+- Memory usage patterns
 
-    def test_sec_phi_typical_values(self):
-        """Check sec_phi is reasonable for typical paths."""
-        sec_phi = sec_phi_spherical(1000.0, 300.0)
-        assert 1.5 < sec_phi < 3.0
-```
-
-### Integration Tests
-
-Integration tests verify end-to-end functionality:
-
-```python
-class TestIntegration:
-    def test_washington_london_path(self):
-        """Test transatlantic path with ray tracing."""
-        profile = create_simple_profile(foF2=7.5, hmF2=300.0)
-        modes = find_propagation_modes(
-            profile,
-            tx_lat=38.9, tx_lon=-77.0,
-            rx_lat=51.5, rx_lon=-0.1,
-            frequency_mhz=14.0,
-        )
-        assert len(modes) >= 1
-
-    def test_geomagnetic_in_channel(self):
-        """Channel should accept geomagnetic modulation."""
-        channel = HFChannel(use_ray_tracing=True)
-        channel.set_geomagnetic_indices(f10_7=150, kp=4, dst=-50)
-        muf = channel.get_muf()
-        assert muf > 0
-```
-
-### Current Test Status
-
-```
-========================= 204 passed in 1.87s =========================
-```
-
-All tests pass. The test suite validates:
-- Mathematical correctness (gamma functions, geometry)
-- Physical consistency (MUF calculations, propagation modes)
-- Edge cases (poles, division by zero, out-of-range inputs)
-- Integration between modules
+---
 
 ## Performance
-
-### Targets
-- **Throughput**: 2 Msps sustained real-time
-- **Latency**: <50 ms input-to-output
-- **GPU memory**: <2 GB for 1 MHz bandwidth
 
 ### Benchmarks (RTX 5090 with Native CUDA Module)
 
@@ -752,18 +854,12 @@ All tests pass. The test suite validates:
 | Ray tracing (single ray) | <10 ms | CPU Haselgrove integration |
 | Mode discovery (3 hops) | <100 ms | CPU path finder |
 
-### Building for Maximum Performance
+### Targets
+- **Throughput**: 2 Msps sustained real-time
+- **Latency**: <50 ms input-to-output
+- **GPU memory**: <2 GB for 1 MHz bandwidth
 
-```bash
-# Build native CUDA module
-./scripts/build_gpu.sh
-
-# Verify native module is active
-python3 -c "from hfpathsim.gpu import get_backend_info; print(get_backend_info()['backend'])"
-# Expected: 'cuda'
-```
-
-*Note: The native CUDA module provides maximum performance. Without it, the system falls back to CuPy (if available) or NumPy. RTX 5090 (Blackwell, compute 12.0) requires CUDA Toolkit 12.8+ for optimal sm_120 code generation; CUDA 12.0 compiles for sm_90 which still runs correctly.*
+---
 
 ## References
 
@@ -779,6 +875,72 @@ python3 -c "from hfpathsim.gpu import get_backend_info; print(get_backend_info()
 
 6. **Haselgrove Equations**: Haselgrove, J., "Ray theory and a new method for ray tracing," Physics of the Ionosphere, 1955.
 
+---
+
+## Development Roadmap
+
+### Phase 1: Foundation ✓
+- [x] Project structure and packaging
+- [x] PyQt6 dashboard skeleton
+- [x] Input source abstraction
+- [x] GPU detection and pybind11 setup
+
+### Phase 2: Vogler-Hoffmeyer Core ✓
+- [x] Complex gamma function implementation
+- [x] Reflection coefficient R(ω)
+- [x] ITU-R F.1487 presets
+- [x] Gaussian scatter fading
+- [x] Overlap-save convolution
+- [x] Real-time visualization
+
+### Phase 3: Enhanced Fidelity ✓
+- [x] Watterson tapped delay line model
+- [x] AWGN and atmospheric noise injection (ITU-R P.372)
+- [x] Man-made noise modeling
+- [x] Impulse noise generation
+- [x] AGC with attack/release dynamics
+- [x] Signal limiting (hard/soft/cubic)
+- [x] Frequency offset and drift simulation
+- [x] Phase noise modeling
+- [x] Impairment chain for combined effects
+- [x] Channel state recording and playback
+
+### Phase 4: Advanced Propagation ✓
+- [x] Spherical Earth geometry (replaces hardcoded sec_phi)
+- [x] 2D Haselgrove ray equation integration
+- [x] Multi-hop propagation mode discovery (1F, 2F, 3F, E, Es)
+- [x] IonosphereProfile with Ne(h) electron density
+- [x] Sporadic-E layer modeling with time variation
+- [x] Geomagnetic effects (F10.7, Kp, Dst modulation)
+- [x] HFChannel integration with ray tracing
+
+### Phase 5: GPU Acceleration ✓
+- [x] Native CUDA module with pybind11 bindings
+- [x] Batched cuFFT overlap-save using `cufftPlanMany` (68.9 Msps)
+- [x] GPU-accelerated Doppler fading generation with cuRAND
+- [x] Real-time spectrum computation for GUI
+- [x] Build scripts (`build_gpu.sh`, `install_gpu.sh`)
+- [x] Fallback chain: Native CUDA → CuPy → NumPy
+
+### Phase 6: Full Dashboard Integration ✓
+- [x] Tabbed control interface (6 tabs)
+- [x] Channel panel with Vogler/Watterson model switching
+- [x] Noise panel with AWGN/atmospheric/man-made/impulse controls
+- [x] Impairments panel with AGC/limiter/freq offset and meters
+- [x] Ionosphere panel with ray tracing, Es, geomagnetic, GIRO/IRI
+- [x] Recording panel with record/playback controls
+- [x] Full processing chain integration in main window
+- [x] Real-time meter updates
+
+### Phase 7: Output & Integration (Planned)
+- [ ] Real-time IQ output (sound card, network)
+- [ ] GNU Radio source/sink blocks
+- [ ] MATLAB/Simulink interface
+- [ ] Docker containerization
+- [ ] Cloud deployment option
+
+---
+
 ## Contributing
 
 Contributions are welcome! Please feel free to submit issues or pull requests.
@@ -792,74 +954,25 @@ pip install -e ".[dev]"
 # Run tests
 pytest
 
-# Check GPU functionality
-python -c "from hfpathsim.gpu import get_device_info; print(get_device_info())"
+# Check code style
+flake8 src/hfpathsim
+
+# Run GUI
+python -m hfpathsim
 ```
+
+---
 
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+---
 
 ## Acknowledgments
 
 - NTIA/ITS for the Vogler-Hoffmeyer model documentation
 - ITU-R for HF channel characterization standards
 - The pyqtgraph team for excellent real-time plotting
-- NVIDIA for CUDA and CuPy GPU acceleration
-
----
-
-## Development Roadmap
-
-### Phase 1: Foundation (Complete)
-- [x] Project structure and packaging
-- [x] PyQt6 dashboard skeleton
-- [x] Input source abstraction
-- [x] GPU detection and pybind11 setup
-
-### Phase 2: Vogler-Hoffmeyer Core (Complete)
-- [x] Complex gamma function implementation
-- [x] Reflection coefficient R(ω)
-- [x] ITU-R F.1487 presets
-- [x] Gaussian scatter fading
-- [x] Overlap-save convolution
-- [x] Real-time visualization
-
-### Phase 3: Enhanced Fidelity (Complete)
-- [x] Watterson tapped delay line model
-- [x] AWGN and atmospheric noise injection (ITU-R P.372)
-- [x] Man-made noise modeling
-- [x] Impulse noise generation
-- [x] AGC with attack/release dynamics
-- [x] Signal limiting (hard/soft/cubic)
-- [x] Frequency offset and drift simulation
-- [x] Phase noise modeling
-- [x] Impairment chain for combined effects
-- [x] Channel state recording and playback
-
-### Phase 4: Advanced Propagation (Complete)
-- [x] Spherical Earth geometry (replaces hardcoded sec_phi)
-- [x] 2D Haselgrove ray equation integration
-- [x] Multi-hop propagation mode discovery (1F, 2F, 3F, E, Es)
-- [x] IonosphereProfile with Ne(h) electron density
-- [x] Sporadic-E layer modeling with time variation
-- [x] Geomagnetic effects (F10.7, Kp, Dst modulation)
-- [x] HFChannel integration with ray tracing
-- [x] 91 new unit tests (185 total)
-
-### Phase 5: GPU Acceleration (Complete)
-- [x] Native CUDA module with pybind11 bindings
-- [x] Batched cuFFT overlap-save using `cufftPlanMany` (68.9 Msps)
-- [x] GPU-accelerated Doppler fading generation with cuRAND
-- [x] Real-time spectrum computation for GUI
-- [x] Build scripts (`build_gpu.sh`, `install_gpu.sh`)
-- [x] CUDA architecture detection (sm_80-90, sm_100-120 with CUDA 12.8+)
-- [x] Fallback chain: Native CUDA → CuPy → NumPy
-- [x] 19 new GPU tests (204 total)
-
-### Phase 6: Integration (Planned)
-- [ ] Real-time IQ output (sound card, network)
-- [ ] GNU Radio source/sink blocks
-- [ ] MATLAB/Simulink interface
-- [ ] Docker containerization
-- [ ] Cloud deployment option
+- NVIDIA for CUDA and GPU acceleration support
+- The PyQt team for the Qt6 Python bindings

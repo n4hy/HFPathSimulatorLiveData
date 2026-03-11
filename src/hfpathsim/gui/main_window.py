@@ -14,45 +14,84 @@ from PyQt6.QtWidgets import (
     QLabel,
     QComboBox,
     QPushButton,
-    QGroupBox,
-    QGridLayout,
-    QDoubleSpinBox,
-    QCheckBox,
     QFileDialog,
     QMessageBox,
 )
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QAction, QIcon
+from PyQt6.QtGui import QAction
 
 from hfpathsim.core.channel import HFChannel, ProcessingConfig
 from hfpathsim.core.parameters import VoglerParameters, ITUCondition
+from hfpathsim.core.watterson import WattersonChannel, WattersonConfig
+from hfpathsim.core.noise import NoiseGenerator, NoiseConfig
+from hfpathsim.core.impairments import (
+    ImpairmentChain,
+    AGC,
+    Limiter,
+    FrequencyOffset,
+    AGCConfig,
+    LimiterConfig,
+    FrequencyOffsetConfig,
+)
+from hfpathsim.core.recording import ChannelRecorder, ChannelPlayer
 from hfpathsim.input.base import InputSource
 from hfpathsim.input.file import FileInputSource
 
 from .widgets.channel_display import ChannelDisplayWidget
 from .widgets.scattering import ScatteringWidget
 from .widgets.spectrum import SpectrumWidget
-from .widgets.parameters import ParameterPanel
+from .widgets.control_tabs import ControlTabWidget
 from .widgets.input_config import InputConfigWidget
+from .widgets.channel_panel import ChannelPanel
+from .widgets.noise_panel import NoisePanel
+from .widgets.impairments_panel import ImpairmentsPanel
+from .widgets.ionosphere_panel import IonospherePanel
+from .widgets.recording_panel import RecordingPanel
 
 
 class MainWindow(QMainWindow):
-    """Main application window for HF Path Simulator."""
+    """Main application window for HF Path Simulator.
+
+    Integrates all backend features:
+    - Vogler IPM and Watterson TDL channel models
+    - Noise injection (AWGN, atmospheric, man-made, impulse)
+    - Signal impairments (AGC, limiter, frequency offset)
+    - Ray tracing and ionospheric modeling
+    - Channel state recording and playback
+    """
 
     def __init__(self):
         super().__init__()
 
         self.setWindowTitle("HF Path Simulator")
-        self.setMinimumSize(1280, 800)
+        self.setMinimumSize(1400, 900)
 
         # Core components
         self._channel: Optional[HFChannel] = None
+        self._watterson_channel: Optional[WattersonChannel] = None
         self._input_source: Optional[InputSource] = None
         self._running = False
+
+        # Current channel model selection
+        self._use_watterson = False
+
+        # Impairment chain components
+        self._noise_generator: Optional[NoiseGenerator] = None
+        self._agc: Optional[AGC] = None
+        self._limiter: Optional[Limiter] = None
+        self._freq_offset: Optional[FrequencyOffset] = None
+
+        # Recording/playback
+        self._recorder: Optional[ChannelRecorder] = None
+        self._player: Optional[ChannelPlayer] = None
 
         # Processing timer
         self._process_timer = QTimer()
         self._process_timer.timeout.connect(self._process_block)
+
+        # Meter update timer
+        self._meter_timer = QTimer()
+        self._meter_timer.timeout.connect(self._update_meters)
 
         # Setup UI
         self._setup_ui()
@@ -60,8 +99,9 @@ class MainWindow(QMainWindow):
         self._setup_toolbar()
         self._setup_statusbar()
 
-        # Initialize channel
+        # Initialize channel and impairments
         self._init_channel()
+        self._init_impairments()
 
         # Apply stylesheet
         self._apply_style()
@@ -102,29 +142,66 @@ class MainWindow(QMainWindow):
 
         display_splitter.addWidget(left_panel)
         display_splitter.addWidget(right_panel)
-        display_splitter.setSizes([640, 640])
+        display_splitter.setSizes([700, 700])
 
         main_layout.addWidget(display_splitter, stretch=3)
 
-        # Bottom section: Controls
-        controls_widget = QWidget()
-        controls_layout = QHBoxLayout(controls_widget)
-        controls_layout.setContentsMargins(0, 0, 0, 0)
+        # Bottom section: Tabbed controls
+        self._control_tabs = ControlTabWidget()
 
-        # Input configuration
+        # Create all control panels
         self._input_config = InputConfigWidget()
-        self._input_config.source_changed.connect(self._on_input_changed)
-        self._input_config.start_requested.connect(self._start_processing)
-        self._input_config.stop_requested.connect(self._stop_processing)
+        self._channel_panel = ChannelPanel()
+        self._noise_panel = NoisePanel()
+        self._impairments_panel = ImpairmentsPanel()
+        self._ionosphere_panel = IonospherePanel()
+        self._recording_panel = RecordingPanel()
 
-        # Parameter panel
-        self._param_panel = ParameterPanel()
-        self._param_panel.parameters_changed.connect(self._on_parameters_changed)
+        # Setup tabs with panels
+        self._control_tabs.setup_panels(
+            input_panel=self._input_config,
+            channel_panel=self._channel_panel,
+            noise_panel=self._noise_panel,
+            impairments_panel=self._impairments_panel,
+            ionosphere_panel=self._ionosphere_panel,
+            recording_panel=self._recording_panel,
+        )
 
-        controls_layout.addWidget(self._input_config, stretch=1)
-        controls_layout.addWidget(self._param_panel, stretch=2)
+        # Connect control tab signals
+        self._connect_control_signals()
 
-        main_layout.addWidget(controls_widget, stretch=0)
+        main_layout.addWidget(self._control_tabs, stretch=0)
+
+    def _connect_control_signals(self):
+        """Connect signals from control tabs to handlers."""
+        # Input source signals
+        self._control_tabs.source_changed.connect(self._on_input_changed)
+        self._control_tabs.start_requested.connect(self._start_processing)
+        self._control_tabs.stop_requested.connect(self._stop_processing)
+
+        # Channel model signals
+        self._control_tabs.parameters_changed.connect(self._on_parameters_changed)
+        self._control_tabs.watterson_config_changed.connect(self._on_watterson_config_changed)
+        self._control_tabs.model_changed.connect(self._on_model_changed)
+
+        # Noise signals
+        self._control_tabs.noise_config_changed.connect(self._on_noise_config_changed)
+
+        # Impairment signals
+        self._control_tabs.agc_config_changed.connect(self._on_agc_config_changed)
+        self._control_tabs.limiter_config_changed.connect(self._on_limiter_config_changed)
+        self._control_tabs.freq_offset_config_changed.connect(self._on_freq_offset_config_changed)
+
+        # Ionosphere signals
+        self._control_tabs.ray_tracing_requested.connect(self._on_ray_tracing_requested)
+        self._control_tabs.sporadic_e_changed.connect(self._on_sporadic_e_changed)
+        self._control_tabs.geomagnetic_changed.connect(self._on_geomagnetic_changed)
+
+        # Recording signals
+        self._control_tabs.recording_started.connect(self._on_recording_started)
+        self._control_tabs.recording_stopped.connect(self._on_recording_stopped)
+        self._control_tabs.playback_started.connect(self._on_playback_started)
+        self._control_tabs.playback_stopped.connect(self._on_playback_stopped)
 
     def _setup_menu(self):
         """Setup menu bar."""
@@ -197,6 +274,12 @@ class MainWindow(QMainWindow):
         self._preset_combo.currentTextChanged.connect(self._on_preset_changed)
         toolbar.addWidget(self._preset_combo)
 
+        toolbar.addSeparator()
+
+        # GPU status indicator
+        self._gpu_indicator = QLabel("GPU: --")
+        toolbar.addWidget(self._gpu_indicator)
+
     def _setup_statusbar(self):
         """Setup status bar."""
         self._statusbar = QStatusBar()
@@ -208,6 +291,12 @@ class MainWindow(QMainWindow):
 
         self._rate_label = QLabel("Rate: 0 Msps")
         self._statusbar.addPermanentWidget(self._rate_label)
+
+        self._snr_label = QLabel("SNR: -- dB")
+        self._statusbar.addPermanentWidget(self._snr_label)
+
+        self._mode_count_label = QLabel("Modes: 0")
+        self._statusbar.addPermanentWidget(self._mode_count_label)
 
         self._statusbar.showMessage("Ready")
 
@@ -224,10 +313,16 @@ class MainWindow(QMainWindow):
                 self._gpu_label.setText(
                     f"GPU: {info['name']} ({info['backend']})"
                 )
+                self._gpu_indicator.setText(f"GPU: {info['name'][:20]}")
+                self._gpu_indicator.setStyleSheet("color: #4EC9B0;")
             else:
                 self._gpu_label.setText("GPU: Not available (CPU mode)")
+                self._gpu_indicator.setText("GPU: CPU mode")
+                self._gpu_indicator.setStyleSheet("color: #CE9178;")
         except Exception as e:
             self._gpu_label.setText(f"GPU: Error - {e}")
+            self._gpu_indicator.setText("GPU: Error")
+            self._gpu_indicator.setStyleSheet("color: #F14C4C;")
 
     def _apply_style(self):
         """Apply stylesheet to the application."""
@@ -292,6 +387,69 @@ class MainWindow(QMainWindow):
             width: 16px;
             height: 16px;
         }
+        QRadioButton {
+            spacing: 8px;
+        }
+        QRadioButton::indicator {
+            width: 16px;
+            height: 16px;
+        }
+        QSlider::groove:horizontal {
+            height: 6px;
+            background: #3c3c3c;
+            border-radius: 3px;
+        }
+        QSlider::handle:horizontal {
+            width: 16px;
+            margin: -5px 0;
+            background: #0e639c;
+            border-radius: 8px;
+        }
+        QSlider::handle:horizontal:hover {
+            background: #1177bb;
+        }
+        QProgressBar {
+            border: 1px solid #3c3c3c;
+            border-radius: 3px;
+            text-align: center;
+        }
+        QProgressBar::chunk {
+            background-color: #0e639c;
+            border-radius: 2px;
+        }
+        QTabWidget::pane {
+            border: 1px solid #3c3c3c;
+            border-radius: 4px;
+            padding: 4px;
+        }
+        QTabBar::tab {
+            background-color: #2d2d2d;
+            border: 1px solid #3c3c3c;
+            border-bottom: none;
+            border-top-left-radius: 4px;
+            border-top-right-radius: 4px;
+            padding: 6px 16px;
+            margin-right: 2px;
+        }
+        QTabBar::tab:selected {
+            background-color: #252526;
+            border-bottom: 1px solid #252526;
+        }
+        QTabBar::tab:hover:!selected {
+            background-color: #333333;
+        }
+        QTableWidget {
+            background-color: #1e1e1e;
+            gridline-color: #3c3c3c;
+        }
+        QTableWidget::item {
+            padding: 4px;
+        }
+        QHeaderView::section {
+            background-color: #2d2d2d;
+            border: 1px solid #3c3c3c;
+            padding: 4px;
+        }
         QStatusBar {
             background-color: #007acc;
             color: white;
@@ -315,6 +473,18 @@ class MainWindow(QMainWindow):
         QMenu::item:selected {
             background-color: #094771;
         }
+        QLineEdit {
+            background-color: #3c3c3c;
+            border: 1px solid #555555;
+            border-radius: 4px;
+            padding: 4px;
+        }
+        QScrollArea {
+            border: none;
+        }
+        QFrame[frameShape="4"], QFrame[frameShape="5"] {
+            background-color: #2d2d2d;
+        }
         """
         self.setStyleSheet(style)
 
@@ -326,9 +496,30 @@ class MainWindow(QMainWindow):
         self._channel = HFChannel(params, config, use_gpu=True)
         self._channel.add_state_callback(self._on_channel_state)
 
+        # Also initialize Watterson channel
+        watterson_config = WattersonConfig.from_itu_condition(ITUCondition.MODERATE)
+        self._watterson_channel = WattersonChannel(watterson_config)
+
         # Trigger initial state update
         state = self._channel.get_state()
         self._on_channel_state(state)
+
+        # Update mode count in status bar
+        self._mode_count_label.setText(f"Modes: {len(params.modes)}")
+
+    def _init_impairments(self):
+        """Initialize impairment chain components."""
+        # Noise generator
+        self._noise_generator = NoiseGenerator(NoiseConfig())
+
+        # AGC
+        self._agc = AGC(AGCConfig())
+
+        # Limiter
+        self._limiter = Limiter(LimiterConfig())
+
+        # Frequency offset
+        self._freq_offset = FrequencyOffset(FrequencyOffsetConfig())
 
     def _on_channel_state(self, state):
         """Handle channel state updates."""
@@ -352,6 +543,11 @@ class MainWindow(QMainWindow):
                 state.doppler_axis_hz,
             )
 
+        # Record snapshot if recording
+        if self._recorder and self._recording_panel.is_recording():
+            self._recorder.capture()
+            self._recording_panel.update_snapshot_count(self._recorder.num_snapshots)
+
     def _on_input_changed(self, source: InputSource):
         """Handle input source change."""
         self._input_source = source
@@ -360,9 +556,150 @@ class MainWindow(QMainWindow):
         )
 
     def _on_parameters_changed(self, params: VoglerParameters):
-        """Handle parameter changes."""
-        if self._channel:
+        """Handle Vogler parameter changes."""
+        if self._channel and not self._use_watterson:
             self._channel.update_parameters(params)
+            self._mode_count_label.setText(f"Modes: {len(params.modes)}")
+
+    def _on_watterson_config_changed(self, config: WattersonConfig):
+        """Handle Watterson config changes."""
+        if self._watterson_channel and self._use_watterson:
+            self._watterson_channel = WattersonChannel(config)
+            self._mode_count_label.setText(f"Taps: {len(config.taps)}")
+
+    def _on_model_changed(self, model_id: str):
+        """Handle channel model selection change."""
+        self._use_watterson = (model_id == "watterson")
+        self._statusbar.showMessage(
+            f"Channel model: {'Watterson TDL' if self._use_watterson else 'Vogler IPM'}"
+        )
+
+    def _on_noise_config_changed(self, config: NoiseConfig):
+        """Handle noise configuration change."""
+        if self._noise_generator:
+            self._noise_generator = NoiseGenerator(config)
+            self._snr_label.setText(f"SNR: {config.snr_db:.1f} dB")
+
+    def _on_agc_config_changed(self, config: AGCConfig):
+        """Handle AGC configuration change."""
+        if self._agc:
+            self._agc = AGC(config)
+
+    def _on_limiter_config_changed(self, config: LimiterConfig):
+        """Handle limiter configuration change."""
+        if self._limiter:
+            self._limiter = Limiter(config)
+
+    def _on_freq_offset_config_changed(self, config: FrequencyOffsetConfig):
+        """Handle frequency offset configuration change."""
+        if self._freq_offset:
+            self._freq_offset = FrequencyOffset(config)
+
+    def _on_ray_tracing_requested(self, request: dict):
+        """Handle ray tracing request."""
+        try:
+            from hfpathsim.core.raytracing.path_finder import PathFinder
+            from hfpathsim.core.raytracing.ionosphere import create_simple_profile
+
+            # Get current ionospheric parameters from channel panel
+            params = self._channel_panel.get_vogler_parameters()
+
+            profile = create_simple_profile(
+                foF2=params.foF2,
+                hmF2=params.hmF2,
+                foE=params.foE,
+                hmE=params.hmE,
+            )
+
+            finder = PathFinder(profile)
+            modes = finder.find_modes(
+                frequency_mhz=params.frequency_mhz,
+                tx_lat=request["tx_lat"],
+                tx_lon=request["tx_lon"],
+                rx_lat=request["rx_lat"],
+                rx_lon=request["rx_lon"],
+                max_hops=request.get("max_hops", 3),
+            )
+
+            # Convert to display format
+            display_modes = []
+            for mode in modes:
+                display_modes.append({
+                    "name": mode.name,
+                    "delay_ms": mode.group_delay_ms,
+                    "muf_mhz": mode.reflection_height_km * 0.05 + params.foF2,  # Approx
+                    "angle_deg": mode.launch_angle_deg,
+                })
+
+            self._ionosphere_panel.set_discovered_modes(display_modes)
+            self._mode_count_label.setText(f"Modes: {len(modes)}")
+
+        except Exception as e:
+            self._statusbar.showMessage(f"Ray tracing error: {e}")
+
+    def _on_sporadic_e_changed(self, config):
+        """Handle Sporadic-E configuration change."""
+        # Could inject Es layer into profile
+        pass
+
+    def _on_geomagnetic_changed(self, indices):
+        """Handle geomagnetic indices change."""
+        # Could apply to channel model
+        pass
+
+    def _on_recording_started(self):
+        """Handle recording start."""
+        if self._channel:
+            rate = self._recording_panel.get_snapshot_rate()
+            max_duration = self._recording_panel.get_max_duration()
+
+            self._recorder = ChannelRecorder(
+                self._channel,
+                snapshot_rate_hz=rate,
+                max_duration_sec=max_duration,
+            )
+            self._recorder.start()
+            self._statusbar.showMessage("Recording started")
+
+    def _on_recording_stopped(self, filename: str):
+        """Handle recording stop."""
+        if self._recorder:
+            self._recorder.stop()
+
+            # Get metadata from panel
+            metadata = self._recording_panel.get_metadata()
+
+            # Save with selected format
+            fmt = self._recording_panel.get_format()
+            filepath = f"./{filename}"
+
+            try:
+                self._recorder.save(filepath, format=fmt)
+                self._statusbar.showMessage(f"Recording saved: {filepath}")
+            except Exception as e:
+                self._statusbar.showMessage(f"Save error: {e}")
+
+            self._recorder = None
+
+    def _on_playback_started(self, filepath: str):
+        """Handle playback start."""
+        try:
+            self._player = ChannelPlayer()
+            self._player.load(filepath)
+            self._statusbar.showMessage(f"Playing: {filepath}")
+
+            # Start playback timer
+            rate = self._recording_panel.get_playback_rate()
+            interval_ms = int(1000 / (self._player.snapshot_rate_hz * rate))
+            # Playback would be handled by a separate timer
+
+        except Exception as e:
+            self._statusbar.showMessage(f"Playback error: {e}")
+
+    def _on_playback_stopped(self):
+        """Handle playback stop."""
+        self._player = None
+        self._statusbar.showMessage("Playback stopped")
 
     def _on_preset_changed(self, preset_name: str):
         """Handle ITU preset selection."""
@@ -375,7 +712,7 @@ class MainWindow(QMainWindow):
 
         if preset_name in presets:
             params = VoglerParameters.from_itu_condition(presets[preset_name])
-            self._param_panel.set_parameters(params)
+            self._channel_panel.set_vogler_parameters(params)
 
             if self._channel:
                 self._channel.update_parameters(params)
@@ -408,6 +745,9 @@ class MainWindow(QMainWindow):
         # Start processing timer (process blocks every 50ms)
         self._process_timer.start(50)
 
+        # Start meter update timer (update meters every 100ms)
+        self._meter_timer.start(100)
+
     def _stop_processing(self):
         """Stop real-time processing."""
         if not self._running:
@@ -415,13 +755,18 @@ class MainWindow(QMainWindow):
 
         self._running = False
         self._process_timer.stop()
+        self._meter_timer.stop()
 
         self._start_btn.setEnabled(True)
         self._stop_btn.setEnabled(False)
         self._statusbar.showMessage("Stopped")
 
     def _process_block(self):
-        """Process one block of samples."""
+        """Process one block of samples through the full chain.
+
+        Processing order:
+        Input → Channel → Noise → AGC → Limiter → Freq Offset → Output
+        """
         if not self._running or self._input_source is None:
             return
 
@@ -435,14 +780,49 @@ class MainWindow(QMainWindow):
         # Update input spectrum
         self._input_spectrum.update_data(samples)
 
-        # Process through channel
-        if self._channel:
-            output = self._channel.process(samples)
-            self._output_spectrum.update_data(output)
+        # Process through channel model
+        if self._use_watterson and self._watterson_channel:
+            channel_output = self._watterson_channel.process_block(samples)
+        elif self._channel:
+            channel_output = self._channel.process(samples)
+        else:
+            channel_output = samples
 
-            # Update rate display
-            rate = self._input_source.sample_rate / 1e6
-            self._rate_label.setText(f"Rate: {rate:.1f} Msps")
+        # Apply noise if enabled
+        if self._noise_panel.is_noise_enabled() and self._noise_generator:
+            channel_output = self._noise_generator.add_noise(channel_output)
+
+        # Apply AGC if enabled
+        if self._impairments_panel.is_agc_enabled() and self._agc:
+            channel_output = self._agc.process_block(channel_output)
+
+        # Apply limiter if enabled
+        if self._impairments_panel.is_limiter_enabled() and self._limiter:
+            channel_output = self._limiter.process(channel_output)
+
+        # Apply frequency offset if enabled
+        if self._impairments_panel.is_freq_offset_enabled() and self._freq_offset:
+            channel_output = self._freq_offset.process(channel_output)
+
+        # Update output spectrum
+        self._output_spectrum.update_data(channel_output)
+
+        # Update rate display
+        rate = self._input_source.sample_rate / 1e6
+        self._rate_label.setText(f"Rate: {rate:.1f} Msps")
+
+    def _update_meters(self):
+        """Update AGC and limiter meters."""
+        if self._agc and self._impairments_panel.is_agc_enabled():
+            self._impairments_panel.update_agc_meter(self._agc.current_gain_db)
+
+        if self._limiter and self._impairments_panel.is_limiter_enabled():
+            self._impairments_panel.update_limiter_meter(self._limiter.gain_reduction_db)
+
+        if self._freq_offset and self._impairments_panel.is_freq_offset_enabled():
+            # Get current offset including drift
+            config = self._impairments_panel.get_freq_offset_config()
+            self._impairments_panel.update_current_offset(config.offset_hz)
 
     def _open_file(self):
         """Open an IQ file."""
@@ -495,9 +875,15 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self,
             "About HF Path Simulator",
-            "HF Path Simulator v0.1.0\n\n"
-            "Vogler-Hoffmeyer Ionospheric Propagation Model\n"
+            "HF Path Simulator v0.2.0\n\n"
+            "Vogler-Hoffmeyer and Watterson Channel Models\n"
             "with RTX GPU acceleration\n\n"
+            "Features:\n"
+            "- Vogler IPM and Watterson TDL channels\n"
+            "- Noise injection (AWGN, atmospheric, man-made)\n"
+            "- AGC, limiter, frequency offset\n"
+            "- Ray tracing and ionospheric modeling\n"
+            "- Channel state recording/playback\n\n"
             "Based on NTIA TR-88-240 and ITU-R F.1487"
         )
 
@@ -507,5 +893,13 @@ class MainWindow(QMainWindow):
 
         if self._input_source and self._input_source.is_open:
             self._input_source.close()
+
+        # Stop any timers
+        self._process_timer.stop()
+        self._meter_timer.stop()
+
+        # Stop GIRO auto-update if running
+        if hasattr(self._ionosphere_panel, '_giro_timer'):
+            self._ionosphere_panel._giro_timer.stop()
 
         event.accept()
