@@ -1,7 +1,7 @@
 """Core channel simulation components."""
 
-from .parameters import VoglerParameters, ITUCondition
-from .channel import HFChannel
+from .parameters import VoglerParameters, ITUCondition, PropagationMode
+from .channel import HFChannel, RayTracingConfig
 from .watterson import WattersonChannel, WattersonConfig, WattersonTap
 from .noise import NoiseGenerator, NoiseConfig, NoiseType
 from .impairments import (
@@ -21,11 +21,35 @@ from .recording import (
     RecordingMetadata,
 )
 
+# Ray tracing components
+from .raytracing import (
+    # Geometry
+    EARTH_RADIUS_KM,
+    great_circle_distance,
+    sec_phi_spherical,
+    compute_launch_angle,
+    group_delay_ms,
+    # Ionosphere
+    IonosphereProfile,
+    create_simple_profile,
+    create_chapman_profile,
+    # Ray engine
+    RayPath,
+    RayEngine,
+    # Path finder
+    PathFinder,
+    PropagationModeResult,
+    find_propagation_modes,
+    estimate_muf,
+)
+
 __all__ = [
     # Channel models
     "VoglerParameters",
     "ITUCondition",
+    "PropagationMode",
     "HFChannel",
+    "RayTracingConfig",
     "WattersonChannel",
     "WattersonConfig",
     "WattersonTap",
@@ -47,4 +71,22 @@ __all__ = [
     "ChannelPlayer",
     "ChannelSnapshot",
     "RecordingMetadata",
+    # Ray tracing - Geometry
+    "EARTH_RADIUS_KM",
+    "great_circle_distance",
+    "sec_phi_spherical",
+    "compute_launch_angle",
+    "group_delay_ms",
+    # Ray tracing - Ionosphere
+    "IonosphereProfile",
+    "create_simple_profile",
+    "create_chapman_profile",
+    # Ray tracing - Engine
+    "RayPath",
+    "RayEngine",
+    # Ray tracing - Path finder
+    "PathFinder",
+    "PropagationModeResult",
+    "find_propagation_modes",
+    "estimate_muf",
 ]

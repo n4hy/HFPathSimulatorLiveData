@@ -285,3 +285,37 @@ class IRIModel:
             doppler_spread_hz=doppler_spread_hz,
             delay_spread_ms=delay_spread_ms,
         )
+
+    def to_ionosphere_profile(
+        self,
+        latitude: float,
+        longitude: float,
+        time: Optional[datetime] = None,
+    ):
+        """Convert IRI data to IonosphereProfile for ray tracing.
+
+        Args:
+            latitude: Geographic latitude (degrees)
+            longitude: Geographic longitude (degrees)
+            time: Date/time for model
+
+        Returns:
+            IonosphereProfile instance or None if unavailable
+        """
+        from hfpathsim.core.raytracing.ionosphere import IonosphereProfile
+
+        profile = self.get_profile(latitude, longitude, time)
+
+        if profile is None:
+            return None
+
+        return IonosphereProfile(
+            altitude_km=profile.altitude_km,
+            electron_density=profile.electron_density,
+            foF2=profile.foF2,
+            hmF2=profile.hmF2,
+            foE=profile.foE or 3.0,
+            hmE=profile.hmE or 110.0,
+            foF1=profile.foF1,
+            hmF1=profile.hmF1,
+        )

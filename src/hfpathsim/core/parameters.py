@@ -2,8 +2,10 @@
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import Optional, List
 import numpy as np
+
+from .raytracing.geometry import sec_phi_spherical
 
 
 class ITUCondition(Enum):
@@ -46,12 +48,31 @@ ITU_PRESETS = {
 
 @dataclass
 class PropagationMode:
-    """Single ionospheric propagation mode (e.g., 1F2, 2F2, 1E)."""
+    """Single ionospheric propagation mode (e.g., 1F2, 2F2, 1E).
+
+    Attributes:
+        name: Mode identifier (e.g., "1F2", "2F2", "1E", "Es")
+        enabled: Whether this mode is active
+        relative_amplitude: Amplitude relative to strongest mode (0-1)
+        delay_offset_ms: Delay relative to fastest mode
+        n_hops: Number of ionospheric hops
+        reflection_height_km: Height of ionospheric reflection
+        layer: Ionospheric layer ("F2", "E", "Es", "F1")
+        sec_phi: Secant of angle of incidence (for MUF calculation)
+        launch_angle_deg: Launch elevation angle
+    """
 
     name: str  # e.g., "1F2", "2F2", "1E"
     enabled: bool = True
     relative_amplitude: float = 1.0  # Relative to strongest mode
     delay_offset_ms: float = 0.0  # Additional delay relative to first mode
+
+    # Extended ray-traced parameters (optional)
+    n_hops: int = 1
+    reflection_height_km: Optional[float] = None
+    layer: str = "F2"
+    sec_phi: Optional[float] = None
+    launch_angle_deg: Optional[float] = None
 
 
 @dataclass
@@ -101,10 +122,14 @@ class VoglerParameters:
         chi determines the character of reflection:
         - chi > 0.5: partial reflection (below critical frequency)
         - chi < 0.5: total reflection (above critical frequency)
+
+        Uses spherical Earth geometry to compute sec(phi) based on
+        actual path length and layer height, replacing the previous
+        hardcoded approximation.
         """
-        # Simplified calculation - full version requires ray tracing
         fc = self.foF2  # Critical frequency
         f = self.frequency_mhz
+
         if f <= fc:
             # Below critical frequency - partial penetration
             return 0.5 * (1 - (f / fc) ** 2)
@@ -112,13 +137,56 @@ class VoglerParameters:
             # Above critical frequency for vertical incidence
             # Oblique incidence can still reflect via secant law
             # MUF = foF2 * sec(phi) where phi is angle of incidence
-            # Assume typical oblique geometry
-            sec_phi = 3.0  # Typical for 1000 km path
+
+            # Compute sec(phi) from path geometry using spherical Earth
+            # This replaces the previous hardcoded sec_phi = 3.0
+            sec_phi = sec_phi_spherical(self.path_length_km, self.hmF2)
+
             muf = fc * sec_phi
             if f <= muf:
                 return 0.5 * (1 - (f / muf) ** 2)
             else:
                 return -0.5  # No reflection possible
+
+    def get_sec_phi(self, layer: str = "F2") -> float:
+        """Get secant of angle of incidence for specified layer.
+
+        Args:
+            layer: Ionospheric layer ("F2", "E", or height in km)
+
+        Returns:
+            sec(phi) for MUF calculation
+        """
+        if layer == "F2":
+            hm = self.hmF2
+        elif layer == "E":
+            hm = self.hmE
+        else:
+            # Assume it's a height value
+            try:
+                hm = float(layer)
+            except ValueError:
+                hm = self.hmF2
+
+        return sec_phi_spherical(self.path_length_km, hm)
+
+    def get_muf(self, layer: str = "F2") -> float:
+        """Calculate Maximum Usable Frequency for path.
+
+        Args:
+            layer: Ionospheric layer ("F2" or "E")
+
+        Returns:
+            MUF in MHz
+        """
+        sec_phi = self.get_sec_phi(layer)
+
+        if layer == "F2":
+            return self.foF2 * sec_phi
+        elif layer == "E":
+            return self.foE * sec_phi
+        else:
+            return self.foF2 * sec_phi
 
     @classmethod
     def from_itu_condition(

@@ -1,12 +1,12 @@
 """HF Channel abstraction and processing pipeline."""
 
 from dataclasses import dataclass
-from typing import Optional, Callable
+from typing import Optional, Callable, List, Tuple
 import numpy as np
 from scipy import signal
 from scipy.special import gamma as scipy_gamma
 
-from .parameters import VoglerParameters, ChannelState
+from .parameters import VoglerParameters, ChannelState, PropagationMode
 
 
 @dataclass
@@ -19,6 +19,20 @@ class ProcessingConfig:
     channel_update_rate_hz: float = 10.0  # H(f,t) update rate
 
 
+@dataclass
+class RayTracingConfig:
+    """Configuration for ray-traced propagation modes."""
+
+    enabled: bool = False  # Use ray tracing for mode discovery
+    tx_lat: float = 0.0  # Transmitter latitude (degrees)
+    tx_lon: float = 0.0  # Transmitter longitude (degrees)
+    rx_lat: float = 0.0  # Receiver latitude (degrees)
+    rx_lon: float = 0.0  # Receiver longitude (degrees)
+    max_hops: int = 3  # Maximum number of hops to consider
+    use_sporadic_e: bool = False  # Include sporadic-E modes
+    use_geomagnetic: bool = False  # Apply geomagnetic modulation
+
+
 class HFChannel:
     """HF ionospheric channel simulator using Vogler-Hoffmeyer IPM.
 
@@ -26,6 +40,12 @@ class HFChannel:
     - NTIA TR-88-240 reflection coefficient model
     - ITU-R F.1487 channel statistics
     - Gaussian scatter fading model
+
+    Supports optional physics-based ray tracing for accurate:
+    - Oblique incidence angle (sec_phi) computation
+    - Multi-hop propagation mode discovery
+    - Sporadic-E layer effects
+    - Geomagnetic modulation
     """
 
     def __init__(
@@ -33,6 +53,8 @@ class HFChannel:
         params: Optional[VoglerParameters] = None,
         config: Optional[ProcessingConfig] = None,
         use_gpu: bool = True,
+        use_ray_tracing: bool = False,
+        ray_config: Optional[RayTracingConfig] = None,
     ):
         """Initialize the HF channel.
 
@@ -40,10 +62,14 @@ class HFChannel:
             params: Vogler ionospheric parameters
             config: Processing configuration
             use_gpu: Whether to use GPU acceleration
+            use_ray_tracing: Enable physics-based ray tracing
+            ray_config: Ray tracing configuration
         """
         self.params = params or VoglerParameters()
         self.config = config or ProcessingConfig()
         self.use_gpu = use_gpu
+        self.use_ray_tracing = use_ray_tracing
+        self.ray_config = ray_config or RayTracingConfig()
 
         # State
         self._state = ChannelState()
@@ -51,6 +77,12 @@ class HFChannel:
 
         # GPU module (lazy load)
         self._gpu_module = None
+
+        # Ray tracing components (lazy load)
+        self._ionosphere_profile = None
+        self._path_finder = None
+        self._sporadic_e = None
+        self._geomag_modulator = None
 
         # Pre-compute frequency axis
         self._init_axes()
@@ -60,6 +92,10 @@ class HFChannel:
 
         # Callbacks for state updates
         self._state_callbacks: list[Callable[[ChannelState], None]] = []
+
+        # Initialize ray tracing if enabled
+        if self.use_ray_tracing:
+            self._init_ray_tracing()
 
     def _init_axes(self):
         """Initialize frequency and delay axes."""
@@ -91,6 +127,214 @@ class HFChannel:
                 self._gpu_module = False
                 self.use_gpu = False
 
+    def _init_ray_tracing(self):
+        """Initialize ray tracing components."""
+        from .raytracing import (
+            create_simple_profile,
+            PathFinder,
+            IonosphereProfile,
+        )
+        from hfpathsim.iono.sporadic_e import SporadicELayer, SporadicEConfig
+        from hfpathsim.iono.geomagnetic import GeomagneticModulator, GeomagneticIndices
+
+        # Create ionosphere profile from Vogler parameters
+        self._ionosphere_profile = create_simple_profile(
+            foF2=self.params.foF2,
+            hmF2=self.params.hmF2,
+            foE=self.params.foE,
+            hmE=self.params.hmE,
+            ym_F2=self.params.ym_F2,
+            ym_E=self.params.ym_E,
+        )
+
+        # Create path finder
+        self._path_finder = PathFinder(self._ionosphere_profile)
+
+        # Initialize sporadic-E if enabled
+        if self.ray_config.use_sporadic_e:
+            self._sporadic_e = SporadicELayer(SporadicEConfig(enabled=True))
+
+        # Initialize geomagnetic modulator if enabled
+        if self.ray_config.use_geomagnetic:
+            self._geomag_modulator = GeomagneticModulator(GeomagneticIndices.quiet())
+
+    def update_ionosphere(
+        self,
+        foF2: Optional[float] = None,
+        hmF2: Optional[float] = None,
+        foE: Optional[float] = None,
+        hmE: Optional[float] = None,
+    ):
+        """Update ionospheric parameters and recompute ray-traced modes.
+
+        Args:
+            foF2: F2 critical frequency (MHz)
+            hmF2: F2 peak height (km)
+            foE: E critical frequency (MHz)
+            hmE: E peak height (km)
+        """
+        # Update Vogler parameters
+        if foF2 is not None:
+            self.params.foF2 = foF2
+        if hmF2 is not None:
+            self.params.hmF2 = hmF2
+        if foE is not None:
+            self.params.foE = foE
+        if hmE is not None:
+            self.params.hmE = hmE
+
+        # Re-initialize ray tracing if enabled
+        if self.use_ray_tracing:
+            self._init_ray_tracing()
+            self._update_modes_from_ray_tracing()
+
+        # Recompute transfer function
+        self._compute_transfer_function()
+
+    def _update_modes_from_ray_tracing(self):
+        """Update propagation modes using ray tracing."""
+        if not self.use_ray_tracing or self._path_finder is None:
+            return
+
+        # Apply sporadic-E if enabled
+        profile = self._ionosphere_profile
+        if self._sporadic_e is not None and self._sporadic_e.enabled:
+            profile = self._sporadic_e.inject(profile)
+            self._path_finder = type(self._path_finder)(profile)
+
+        # Apply geomagnetic modulation if enabled
+        if self._geomag_modulator is not None:
+            latitude = (self.ray_config.tx_lat + self.ray_config.rx_lat) / 2
+            profile = self._geomag_modulator.apply_to_profile(profile, latitude)
+            self._path_finder = type(self._path_finder)(profile)
+
+        # Find propagation modes
+        modes = self._path_finder.find_modes(
+            frequency_mhz=self.params.frequency_mhz,
+            tx_lat=self.ray_config.tx_lat,
+            tx_lon=self.ray_config.tx_lon,
+            rx_lat=self.ray_config.rx_lat,
+            rx_lon=self.ray_config.rx_lon,
+            max_hops=self.ray_config.max_hops,
+        )
+
+        # Convert to PropagationMode objects
+        self.params.modes = [
+            PropagationMode(
+                name=m.name,
+                enabled=True,
+                relative_amplitude=m.relative_amplitude,
+                delay_offset_ms=m.delay_offset_ms,
+                n_hops=m.n_hops,
+                reflection_height_km=m.reflection_height_km,
+                layer=m.layer,
+                sec_phi=m.sec_phi,
+                launch_angle_deg=m.launch_angle_deg,
+            )
+            for m in modes
+        ]
+
+    def set_path(
+        self,
+        tx_lat: float,
+        tx_lon: float,
+        rx_lat: float,
+        rx_lon: float,
+    ):
+        """Set transmitter and receiver locations for ray tracing.
+
+        Args:
+            tx_lat: Transmitter latitude (degrees)
+            tx_lon: Transmitter longitude (degrees)
+            rx_lat: Receiver latitude (degrees)
+            rx_lon: Receiver longitude (degrees)
+        """
+        self.ray_config.tx_lat = tx_lat
+        self.ray_config.tx_lon = tx_lon
+        self.ray_config.rx_lat = rx_lat
+        self.ray_config.rx_lon = rx_lon
+
+        # Update path length in Vogler parameters
+        from .raytracing.geometry import great_circle_distance
+        self.params.path_length_km = great_circle_distance(
+            tx_lat, tx_lon, rx_lat, rx_lon
+        )
+
+        # Update modes if ray tracing enabled
+        if self.use_ray_tracing:
+            self._update_modes_from_ray_tracing()
+            self._compute_transfer_function()
+
+    def enable_sporadic_e(self, foEs: float = 5.0, hmEs: float = 105.0):
+        """Enable sporadic-E layer.
+
+        Args:
+            foEs: Sporadic-E critical frequency (MHz)
+            hmEs: Sporadic-E height (km)
+        """
+        from hfpathsim.iono.sporadic_e import SporadicELayer, SporadicEConfig
+
+        self._sporadic_e = SporadicELayer(
+            SporadicEConfig(enabled=True, foEs_mhz=foEs, hmEs_km=hmEs)
+        )
+        self.ray_config.use_sporadic_e = True
+
+        if self.use_ray_tracing:
+            self._update_modes_from_ray_tracing()
+            self._compute_transfer_function()
+
+    def disable_sporadic_e(self):
+        """Disable sporadic-E layer."""
+        if self._sporadic_e is not None:
+            self._sporadic_e.disable()
+        self.ray_config.use_sporadic_e = False
+
+        if self.use_ray_tracing:
+            self._update_modes_from_ray_tracing()
+            self._compute_transfer_function()
+
+    def set_geomagnetic_indices(
+        self,
+        f10_7: float = 100.0,
+        kp: float = 2.0,
+        dst: float = 0.0,
+    ):
+        """Set geomagnetic indices for ionospheric modulation.
+
+        Args:
+            f10_7: F10.7 solar flux (sfu)
+            kp: Kp geomagnetic index (0-9)
+            dst: Dst storm-time index (nT)
+        """
+        from hfpathsim.iono.geomagnetic import GeomagneticModulator, GeomagneticIndices
+
+        indices = GeomagneticIndices(f10_7=f10_7, kp=kp, dst=dst)
+        self._geomag_modulator = GeomagneticModulator(indices)
+        self.ray_config.use_geomagnetic = True
+
+        if self.use_ray_tracing:
+            self._update_modes_from_ray_tracing()
+            self._compute_transfer_function()
+
+    def get_muf(self, layer: str = "F2") -> float:
+        """Get Maximum Usable Frequency for current path.
+
+        Args:
+            layer: Ionospheric layer ("F2", "E", or "Es")
+
+        Returns:
+            MUF in MHz
+        """
+        if self.use_ray_tracing and self._path_finder is not None:
+            from .raytracing.path_finder import estimate_muf
+            return estimate_muf(
+                self._ionosphere_profile,
+                self.params.path_length_km,
+                layer,
+            )
+        else:
+            return self.params.get_muf(layer)
+
     def update_parameters(self, params: VoglerParameters):
         """Update channel parameters and recompute transfer function."""
         self.params = params
@@ -119,12 +363,34 @@ class HFChannel:
         sigma = self.params.sigma
         chi = self.params.chi
 
+        # Check for gamma function poles:
+        # gamma(0.5 + chi) has pole when chi = -0.5, -1.5, -2.5, ...
+        # gamma(0.5 - chi) has pole when chi = 0.5, 1.5, 2.5, ...
+        # When chi <= -0.5, frequency is above MUF - no reflection possible
+        if chi is None or chi <= -0.49:
+            # No reflection - return zero with proper shape
+            return np.zeros_like(omega_norm, dtype=np.complex64)
+
+        # Check for pole at chi near 0.5 (very close to critical frequency)
+        if abs(chi - 0.5) < 0.01:
+            chi = 0.51  # Nudge away from pole
+
         # Base propagation delay
         t0 = self.params.get_base_delay_ms() / 1000  # Convert to seconds
 
         # Compute reflection coefficient using gamma functions
         # Use scipy's gamma function for complex arguments
         R = np.zeros_like(omega_norm, dtype=np.complex128)
+
+        # Pre-compute denominator real gamma values (same for all frequencies)
+        try:
+            g5 = scipy_gamma(0.5 - chi)
+            g6 = scipy_gamma(0.5 + chi)
+            den_real = g5 * g6
+            if not np.isfinite(den_real) or abs(den_real) < 1e-30:
+                return np.zeros_like(omega_norm, dtype=np.complex64)
+        except (ValueError, OverflowError):
+            return np.zeros_like(omega_norm, dtype=np.complex64)
 
         for i, omega in enumerate(omega_norm):
             try:
@@ -136,16 +402,25 @@ class HFChannel:
 
                 # Denominator terms
                 g4 = scipy_gamma(complex(1, sigma * omega))
-                g5 = scipy_gamma(0.5 - chi)
-                g6 = scipy_gamma(0.5 + chi)
-                den = g4 * g5 * g6
+                den = g4 * den_real
+
+                # Check for invalid values
+                if not (np.isfinite(num) and np.isfinite(den) and abs(den) > 1e-30):
+                    R[i] = 0.0
+                    continue
 
                 # Phase from propagation delay
                 phase = np.exp(-1j * 2 * np.pi * freq_hz[i] * t0)
 
-                R[i] = (num / den) * phase
+                result = (num / den) * phase
 
-            except (ValueError, ZeroDivisionError):
+                # Final sanity check
+                if np.isfinite(result):
+                    R[i] = result
+                else:
+                    R[i] = 0.0
+
+            except (ValueError, ZeroDivisionError, OverflowError):
                 # Handle edge cases (poles of gamma function)
                 R[i] = 0.0
 
@@ -180,9 +455,11 @@ class HFChannel:
 
             # Apply in frequency domain
             fading = np.fft.ifft(np.fft.fft(noise) * doppler_filter)
-            fading = fading / np.std(fading)  # Normalize
-
-            R = R * (1 + 0.3 * fading)  # Modulate amplitude
+            std_fading = np.std(fading)
+            if std_fading > 1e-10:
+                fading = fading / std_fading  # Normalize
+                R = R * (1 + 0.3 * fading)  # Modulate amplitude
+            # else: skip fading if std is zero (degenerate case)
 
         # Delay spreading - convolve with exponential decay
         delay_spread = self.params.delay_spread_ms
