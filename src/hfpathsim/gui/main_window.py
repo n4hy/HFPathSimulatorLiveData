@@ -23,6 +23,7 @@ from PyQt6.QtGui import QAction
 from hfpathsim.core.channel import HFChannel, ProcessingConfig
 from hfpathsim.core.parameters import VoglerParameters, ITUCondition
 from hfpathsim.core.watterson import WattersonChannel, WattersonConfig
+from hfpathsim.core.vogler_hoffmeyer import VoglerHoffmeyerChannel, VoglerHoffmeyerConfig
 from hfpathsim.core.noise import NoiseGenerator, NoiseConfig
 from hfpathsim.core.impairments import (
     ImpairmentChain,
@@ -69,11 +70,12 @@ class MainWindow(QMainWindow):
         # Core components
         self._channel: Optional[HFChannel] = None
         self._watterson_channel: Optional[WattersonChannel] = None
+        self._vh_channel: Optional[VoglerHoffmeyerChannel] = None
         self._input_source: Optional[InputSource] = None
         self._running = False
 
-        # Current channel model selection
-        self._use_watterson = False
+        # Current channel model selection: "vogler", "watterson", or "vogler_hoffmeyer"
+        self._current_model = "vogler"
 
         # Impairment chain components
         self._noise_generator: Optional[NoiseGenerator] = None
@@ -182,6 +184,7 @@ class MainWindow(QMainWindow):
         # Channel model signals
         self._control_tabs.parameters_changed.connect(self._on_parameters_changed)
         self._control_tabs.watterson_config_changed.connect(self._on_watterson_config_changed)
+        self._control_tabs.vogler_hoffmeyer_config_changed.connect(self._on_vh_config_changed)
         self._control_tabs.model_changed.connect(self._on_model_changed)
 
         # Noise signals
@@ -500,6 +503,11 @@ class MainWindow(QMainWindow):
         watterson_config = WattersonConfig.from_itu_condition(ITUCondition.MODERATE)
         self._watterson_channel = WattersonChannel(watterson_config)
 
+        # Initialize Vogler-Hoffmeyer channel
+        vh_config = VoglerHoffmeyerConfig.from_itu_condition(ITUCondition.MODERATE)
+        self._vh_channel = VoglerHoffmeyerChannel(vh_config)
+        self._vh_channel.add_state_callback(self._on_vh_channel_state)
+
         # Trigger initial state update
         state = self._channel.get_state()
         self._on_channel_state(state)
@@ -557,22 +565,47 @@ class MainWindow(QMainWindow):
 
     def _on_parameters_changed(self, params: VoglerParameters):
         """Handle Vogler parameter changes."""
-        if self._channel and not self._use_watterson:
+        if self._channel and self._current_model == "vogler":
             self._channel.update_parameters(params)
             self._mode_count_label.setText(f"Modes: {len(params.modes)}")
 
     def _on_watterson_config_changed(self, config: WattersonConfig):
         """Handle Watterson config changes."""
-        if self._watterson_channel and self._use_watterson:
+        if self._watterson_channel and self._current_model == "watterson":
             self._watterson_channel = WattersonChannel(config)
             self._mode_count_label.setText(f"Taps: {len(config.taps)}")
 
+    def _on_vh_config_changed(self, config: VoglerHoffmeyerConfig):
+        """Handle Vogler-Hoffmeyer config changes."""
+        if self._current_model == "vogler_hoffmeyer":
+            self._vh_channel = VoglerHoffmeyerChannel(config)
+            self._vh_channel.add_state_callback(self._on_vh_channel_state)
+            self._mode_count_label.setText(f"Modes: {len(config.modes)}")
+
+    def _on_vh_channel_state(self, state):
+        """Handle Vogler-Hoffmeyer channel state updates."""
+        # Update scattering function display
+        if self._vh_channel and self._current_model == "vogler_hoffmeyer":
+            delay_axis, doppler_axis, S = self._vh_channel.compute_scattering_function()
+            self._scattering.update_data(S.T, delay_axis / 1000.0, doppler_axis)  # Convert us to ms
+
     def _on_model_changed(self, model_id: str):
         """Handle channel model selection change."""
-        self._use_watterson = (model_id == "watterson")
+        self._current_model = model_id
+        model_names = {
+            "vogler": "Vogler IPM",
+            "watterson": "Watterson TDL",
+            "vogler_hoffmeyer": "Vogler-Hoffmeyer Stochastic"
+        }
         self._statusbar.showMessage(
-            f"Channel model: {'Watterson TDL' if self._use_watterson else 'Vogler IPM'}"
+            f"Channel model: {model_names.get(model_id, model_id)}"
         )
+
+        # Update mode count for current model
+        if model_id == "vogler_hoffmeyer" and self._vh_channel:
+            self._mode_count_label.setText(f"Modes: {len(self._vh_channel.config.modes)}")
+            # Trigger scattering function update
+            self._on_vh_channel_state(self._vh_channel.get_state())
 
     def _on_noise_config_changed(self, config: NoiseConfig):
         """Handle noise configuration change."""
@@ -781,9 +814,11 @@ class MainWindow(QMainWindow):
         self._input_spectrum.update_data(samples)
 
         # Process through channel model
-        if self._use_watterson and self._watterson_channel:
+        if self._current_model == "watterson" and self._watterson_channel:
             channel_output = self._watterson_channel.process_block(samples)
-        elif self._channel:
+        elif self._current_model == "vogler_hoffmeyer" and self._vh_channel:
+            channel_output = self._vh_channel.process(samples)
+        elif self._current_model == "vogler" and self._channel:
             channel_output = self._channel.process(samples)
         else:
             channel_output = samples
@@ -875,16 +910,18 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self,
             "About HF Path Simulator",
-            "HF Path Simulator v0.2.0\n\n"
-            "Vogler-Hoffmeyer and Watterson Channel Models\n"
+            "HF Path Simulator v0.3.0\n\n"
+            "Multiple HF Channel Models\n"
             "with RTX GPU acceleration\n\n"
             "Features:\n"
-            "- Vogler IPM and Watterson TDL channels\n"
+            "- Vogler IPM (ray-based) channel model\n"
+            "- Watterson TDL channel model\n"
+            "- Vogler-Hoffmeyer wideband stochastic model\n"
             "- Noise injection (AWGN, atmospheric, man-made)\n"
             "- AGC, limiter, frequency offset\n"
             "- Ray tracing and ionospheric modeling\n"
             "- Channel state recording/playback\n\n"
-            "Based on NTIA TR-88-240 and ITU-R F.1487"
+            "Based on NTIA TR-88-240, TR-90-255, and ITU-R F.1487"
         )
 
     def closeEvent(self, event):

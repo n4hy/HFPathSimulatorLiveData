@@ -1,4 +1,4 @@
-"""Channel control panel widget with Vogler and Watterson models."""
+"""Channel control panel widget with Vogler, Watterson, and Vogler-Hoffmeyer models."""
 
 from typing import Optional, List
 
@@ -24,6 +24,12 @@ from hfpathsim.core.watterson import (
     WattersonConfig,
     WattersonTap,
     DopplerSpectrum,
+)
+from hfpathsim.core.vogler_hoffmeyer import (
+    VoglerHoffmeyerConfig,
+    ModeParameters,
+    CorrelationType,
+    VOGLER_HOFFMEYER_PRESETS,
 )
 
 
@@ -136,18 +142,20 @@ class TapWidget(QFrame):
 class ChannelPanel(QWidget):
     """Panel for controlling channel model parameters.
 
-    Combines Vogler IPM and Watterson TDL models with ITU presets.
+    Combines Vogler IPM, Watterson TDL, and Vogler-Hoffmeyer stochastic models with ITU presets.
     """
 
     parameters_changed = pyqtSignal(VoglerParameters)
     watterson_config_changed = pyqtSignal(WattersonConfig)
-    model_changed = pyqtSignal(str)  # "vogler" or "watterson"
+    vogler_hoffmeyer_config_changed = pyqtSignal(VoglerHoffmeyerConfig)
+    model_changed = pyqtSignal(str)  # "vogler", "watterson", or "vogler_hoffmeyer"
 
     def __init__(self, parent=None):
         super().__init__(parent)
 
         self._params = VoglerParameters()
         self._watterson_config = WattersonConfig.from_itu_condition(ITUCondition.MODERATE)
+        self._vh_config = VoglerHoffmeyerConfig.from_itu_condition(ITUCondition.MODERATE)
         self._tap_widgets: List[TapWidget] = []
 
         self._setup_ui()
@@ -164,7 +172,7 @@ class ChannelPanel(QWidget):
 
         model_row.addWidget(QLabel("Model:"))
         self._model_combo = QComboBox()
-        self._model_combo.addItems(["Vogler IPM", "Watterson TDL"])
+        self._model_combo.addItems(["Vogler IPM", "Watterson TDL", "Vogler-Hoffmeyer"])
         model_row.addWidget(self._model_combo)
 
         model_row.addWidget(QLabel("ITU Preset:"))
@@ -259,8 +267,8 @@ class ChannelPanel(QWidget):
 
         content_layout.addWidget(stats_group)
 
-        # Column 3: Watterson taps / Mode selection
-        self._taps_group = QGroupBox("Watterson Taps / Modes")
+        # Column 3: Watterson taps / Mode selection / Vogler-Hoffmeyer presets
+        self._taps_group = QGroupBox("Watterson Taps / Modes / VH Presets")
         taps_layout = QVBoxLayout(self._taps_group)
 
         # Mode checkboxes (for Vogler)
@@ -296,6 +304,53 @@ class ChannelPanel(QWidget):
         scroll.setWidget(self._taps_container)
         scroll.setMaximumHeight(120)
         taps_layout.addWidget(scroll)
+
+        # Vogler-Hoffmeyer configuration widget
+        self._vh_widget = QWidget()
+        vh_layout = QVBoxLayout(self._vh_widget)
+        vh_layout.setContentsMargins(0, 0, 0, 0)
+
+        # VH Preset selection
+        vh_preset_row = QHBoxLayout()
+        vh_preset_row.addWidget(QLabel("VH Preset:"))
+        self._vh_preset_combo = QComboBox()
+        self._vh_preset_combo.addItems(["equatorial", "polar", "midlatitude", "auroral_spread_f"])
+        self._vh_preset_combo.currentTextChanged.connect(self._on_vh_preset_changed)
+        vh_preset_row.addWidget(self._vh_preset_combo)
+        vh_preset_row.addStretch()
+        vh_layout.addLayout(vh_preset_row)
+
+        # VH parameters grid
+        vh_params_grid = QGridLayout()
+
+        vh_params_grid.addWidget(QLabel("Delay Spread:"), 0, 0)
+        self._vh_delay_spin = QDoubleSpinBox()
+        self._vh_delay_spin.setRange(10.0, 5000.0)
+        self._vh_delay_spin.setValue(100.0)
+        self._vh_delay_spin.setSuffix(" us")
+        self._vh_delay_spin.setSingleStep(10.0)
+        vh_params_grid.addWidget(self._vh_delay_spin, 0, 1)
+
+        vh_params_grid.addWidget(QLabel("Doppler Spread:"), 1, 0)
+        self._vh_doppler_spin = QDoubleSpinBox()
+        self._vh_doppler_spin.setRange(0.01, 50.0)
+        self._vh_doppler_spin.setValue(1.0)
+        self._vh_doppler_spin.setSuffix(" Hz")
+        self._vh_doppler_spin.setSingleStep(0.1)
+        vh_params_grid.addWidget(self._vh_doppler_spin, 1, 1)
+
+        vh_params_grid.addWidget(QLabel("Correlation:"), 2, 0)
+        self._vh_correlation_combo = QComboBox()
+        self._vh_correlation_combo.addItems(["Gaussian", "Exponential"])
+        vh_params_grid.addWidget(self._vh_correlation_combo, 2, 1)
+
+        self._vh_spread_f_check = QCheckBox("Spread-F")
+        vh_params_grid.addWidget(self._vh_spread_f_check, 3, 0, 1, 2)
+
+        vh_layout.addLayout(vh_params_grid)
+
+        taps_layout.addWidget(self._vh_widget)
+        self._vh_widget.setVisible(False)  # Hidden by default
 
         # Add/Remove tap buttons
         tap_btn_row = QHBoxLayout()
@@ -375,19 +430,28 @@ class ChannelPanel(QWidget):
 
     def _update_model_visibility(self):
         """Update visibility based on selected model."""
-        is_watterson = self._model_combo.currentText() == "Watterson TDL"
+        model_text = self._model_combo.currentText()
+        is_watterson = model_text == "Watterson TDL"
+        is_vh = model_text == "Vogler-Hoffmeyer"
+        is_vogler = model_text == "Vogler IPM"
 
-        # Show/hide mode checkboxes vs tap controls
-        self._modes_widget.setVisible(not is_watterson)
+        # Show/hide mode checkboxes vs tap controls vs VH settings
+        self._modes_widget.setVisible(is_vogler)
         self._taps_container.setVisible(is_watterson)
         self._add_tap_btn.setVisible(is_watterson)
         self._rician_check.setVisible(is_watterson)
         self._k_factor_spin.setVisible(is_watterson)
+        self._vh_widget.setVisible(is_vh)
 
     def _on_model_changed(self, model_name: str):
         """Handle model selection change."""
         self._update_model_visibility()
-        model_id = "watterson" if model_name == "Watterson TDL" else "vogler"
+        if model_name == "Watterson TDL":
+            model_id = "watterson"
+        elif model_name == "Vogler-Hoffmeyer":
+            model_id = "vogler_hoffmeyer"
+        else:
+            model_id = "vogler"
         self.model_changed.emit(model_id)
 
     def _on_preset_changed(self, preset_name: str):
@@ -423,14 +487,70 @@ class ChannelPanel(QWidget):
 
     def _on_apply(self):
         """Apply current settings."""
-        is_watterson = self._model_combo.currentText() == "Watterson TDL"
+        model_text = self._model_combo.currentText()
 
-        if is_watterson:
+        if model_text == "Watterson TDL":
             self._on_taps_changed()
             self.watterson_config_changed.emit(self._watterson_config)
+        elif model_text == "Vogler-Hoffmeyer":
+            self._update_vh_config()
+            self.vogler_hoffmeyer_config_changed.emit(self._vh_config)
         else:
             self._update_vogler_params()
             self.parameters_changed.emit(self._params)
+
+    def _on_vh_preset_changed(self, preset_name: str):
+        """Handle Vogler-Hoffmeyer preset change."""
+        if preset_name in VOGLER_HOFFMEYER_PRESETS:
+            self._vh_config = VOGLER_HOFFMEYER_PRESETS[preset_name]()
+            self._update_vh_widgets_from_config()
+
+    def _update_vh_config(self):
+        """Update internal VH config from widget values."""
+        correlation = (CorrelationType.GAUSSIAN
+                      if self._vh_correlation_combo.currentText() == "Gaussian"
+                      else CorrelationType.EXPONENTIAL)
+
+        mode = ModeParameters(
+            name="Custom",
+            amplitude=1.0,
+            floor_amplitude=0.01,
+            tau_L=0.0,
+            sigma_tau=self._vh_delay_spin.value(),
+            sigma_c=self._vh_delay_spin.value() / 4,
+            sigma_D=self._vh_doppler_spin.value(),
+            doppler_shift=0.0,
+            doppler_shift_min_delay=0.0,
+            correlation_type=correlation
+        )
+
+        self._vh_config = VoglerHoffmeyerConfig(
+            sample_rate=self._vh_config.sample_rate,
+            modes=[mode],
+            spread_f_enabled=self._vh_spread_f_check.isChecked()
+        )
+
+    def _update_vh_widgets_from_config(self):
+        """Update VH widgets from current config."""
+        if self._vh_config.modes:
+            mode = self._vh_config.modes[0]
+
+            self._vh_delay_spin.blockSignals(True)
+            self._vh_doppler_spin.blockSignals(True)
+            self._vh_correlation_combo.blockSignals(True)
+            self._vh_spread_f_check.blockSignals(True)
+
+            self._vh_delay_spin.setValue(mode.sigma_tau)
+            self._vh_doppler_spin.setValue(mode.sigma_D)
+            self._vh_correlation_combo.setCurrentText(
+                "Gaussian" if mode.correlation_type == CorrelationType.GAUSSIAN else "Exponential"
+            )
+            self._vh_spread_f_check.setChecked(self._vh_config.spread_f_enabled)
+
+            self._vh_delay_spin.blockSignals(False)
+            self._vh_doppler_spin.blockSignals(False)
+            self._vh_correlation_combo.blockSignals(False)
+            self._vh_spread_f_check.blockSignals(False)
 
     def _update_vogler_params(self):
         """Update internal Vogler parameters from widget values."""
@@ -513,4 +633,20 @@ class ChannelPanel(QWidget):
 
     def get_current_model(self) -> str:
         """Get current model selection."""
-        return "watterson" if self._model_combo.currentText() == "Watterson TDL" else "vogler"
+        model_text = self._model_combo.currentText()
+        if model_text == "Watterson TDL":
+            return "watterson"
+        elif model_text == "Vogler-Hoffmeyer":
+            return "vogler_hoffmeyer"
+        else:
+            return "vogler"
+
+    def set_vogler_hoffmeyer_config(self, config: VoglerHoffmeyerConfig):
+        """Set Vogler-Hoffmeyer configuration."""
+        self._vh_config = config
+        self._update_vh_widgets_from_config()
+
+    def get_vogler_hoffmeyer_config(self) -> VoglerHoffmeyerConfig:
+        """Get current Vogler-Hoffmeyer configuration."""
+        self._update_vh_config()
+        return self._vh_config

@@ -3,6 +3,16 @@
 from .parameters import VoglerParameters, ITUCondition, PropagationMode
 from .channel import HFChannel, RayTracingConfig
 from .watterson import WattersonChannel, WattersonConfig, WattersonTap
+from .vogler_hoffmeyer import (
+    VoglerHoffmeyerChannel,
+    VoglerHoffmeyerConfig,
+    ModeParameters,
+    CorrelationType,
+    VOGLER_HOFFMEYER_PRESETS,
+    get_vogler_hoffmeyer_preset,
+    list_vogler_hoffmeyer_presets,
+)
+from .dispersion import DispersionModel, DispersionParameters, compute_d_from_qp
 from .noise import NoiseGenerator, NoiseConfig, NoiseType
 from .impairments import (
     AGC,
@@ -53,6 +63,18 @@ __all__ = [
     "WattersonChannel",
     "WattersonConfig",
     "WattersonTap",
+    # Vogler-Hoffmeyer wideband stochastic model
+    "VoglerHoffmeyerChannel",
+    "VoglerHoffmeyerConfig",
+    "ModeParameters",
+    "CorrelationType",
+    "VOGLER_HOFFMEYER_PRESETS",
+    "get_vogler_hoffmeyer_preset",
+    "list_vogler_hoffmeyer_presets",
+    # Dispersion
+    "DispersionModel",
+    "DispersionParameters",
+    "compute_d_from_qp",
     # Noise
     "NoiseGenerator",
     "NoiseConfig",

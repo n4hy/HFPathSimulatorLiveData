@@ -30,6 +30,16 @@ The simulator implements the Vogler-Hoffmeyer reflection coefficient model from 
   - Gaussian, flat, and Jakes Doppler spectrum shapes
   - CCIR Good/Moderate/Poor presets
 
+- **Vogler-Hoffmeyer Wideband Stochastic Model (NTIA TR-90-255)**
+  - Full stochastic channel model for wideband HF (up to 1 MHz+)
+  - Gaussian and exponential Doppler spectrum correlation
+  - Delay-dependent Doppler shift (ionospheric dispersion)
+  - Spread-F random multiplication for auroral conditions
+  - Multi-mode propagation (E-layer, F-layer low/high rays)
+  - Presets: equatorial, polar, mid-latitude, auroral spread-F
+  - Optional Rician K-factor for specular component
+  - Frequency-dependent group delay (dispersion) modeling
+
 - **ITU-R F.1487 Channel Conditions**
   - Quiet: τ=0.5ms, ν=0.1Hz (benign mid-latitude)
   - Moderate: τ=2ms, ν=1Hz (typical daytime)
@@ -245,12 +255,13 @@ Configure the signal source:
 
 #### Channel Tab
 Configure the channel model:
-- **Model Selection**: Choose Vogler IPM or Watterson TDL
+- **Model Selection**: Choose Vogler IPM, Watterson TDL, or Vogler-Hoffmeyer
 - **ITU Preset**: Quick select Quiet/Moderate/Disturbed/Flutter
 - **Ionospheric**: Set foF2, hmF2, foE, hmE
 - **Channel Stats**: Delay spread, Doppler spread, frequency, path length
 - **Modes**: Enable/disable propagation modes (1F2, 2F2, 1E, Es)
 - **Watterson Taps**: Add/remove taps, configure delay/amplitude/Doppler per tap
+- **Vogler-Hoffmeyer**: Presets (equatorial/polar/midlatitude/auroral), delay spread, Doppler spread, correlation type, spread-F enable
 
 #### Noise Tab
 Configure noise injection:
@@ -332,6 +343,69 @@ channel = WattersonChannel(config)
 
 # Process signal
 output = channel.process_block(np.random.randn(4096).astype(np.complex64))
+```
+
+### Vogler-Hoffmeyer Wideband Stochastic Model
+
+```python
+from hfpathsim.core.vogler_hoffmeyer import (
+    VoglerHoffmeyerChannel, VoglerHoffmeyerConfig,
+    ModeParameters, CorrelationType,
+    get_vogler_hoffmeyer_preset, list_vogler_hoffmeyer_presets,
+)
+from hfpathsim.core.parameters import ITUCondition
+import numpy as np
+
+# Create from ITU preset
+config = VoglerHoffmeyerConfig.from_itu_condition(ITUCondition.MODERATE)
+channel = VoglerHoffmeyerChannel(config)
+
+# Or use geographic presets
+print(f"Available presets: {list_vogler_hoffmeyer_presets()}")
+# ['equatorial', 'polar', 'midlatitude', 'auroral_spread_f']
+
+# Create polar path (high Doppler spread, auroral effects)
+polar_config = get_vogler_hoffmeyer_preset('polar', sample_rate=2e6)
+polar_channel = VoglerHoffmeyerChannel(polar_config)
+
+# Create custom configuration with multiple modes
+custom_config = VoglerHoffmeyerConfig(
+    sample_rate=2e6,
+    modes=[
+        ModeParameters(
+            name="F-layer low-ray",
+            amplitude=1.0,
+            sigma_tau=100.0,      # Delay spread in microseconds
+            sigma_c=50.0,         # Carrier delay subinterval
+            sigma_D=2.0,          # Doppler spread in Hz
+            doppler_shift=0.5,    # Mean Doppler shift in Hz
+            correlation_type=CorrelationType.GAUSSIAN,
+        ),
+        ModeParameters(
+            name="F-layer high-ray",
+            amplitude=0.6,
+            tau_L=150.0,          # Minimum delay in microseconds
+            sigma_tau=200.0,
+            sigma_c=75.0,
+            sigma_D=3.0,
+            correlation_type=CorrelationType.EXPONENTIAL,  # For flutter fading
+        ),
+    ],
+    spread_f_enabled=True,     # Enable spread-F random amplitude modulation
+    k_factor=6.0,              # Rician K-factor for first tap (dB)
+)
+channel = VoglerHoffmeyerChannel(custom_config)
+
+# Process signal
+test_signal = (np.random.randn(4096) + 1j * np.random.randn(4096)).astype(np.complex64)
+output = channel.process(test_signal)
+
+# Get theoretical scattering function
+delay_axis, doppler_axis, S = channel.compute_scattering_function(
+    num_delay_bins=64,
+    num_doppler_bins=64
+)
+print(f"Scattering function shape: {S.shape}")  # (64, 64)
 ```
 
 ### Full Processing Chain
@@ -668,6 +742,8 @@ HFPathSimulatorLiveData/
 │   │   ├── channel.py             # HFChannel with processing chain
 │   │   ├── vogler_ipm.py          # Vogler reflection coefficient model
 │   │   ├── watterson.py           # Watterson TDL model
+│   │   ├── vogler_hoffmeyer.py    # Vogler-Hoffmeyer wideband stochastic model (NTIA 90-255)
+│   │   ├── dispersion.py          # Frequency-dependent group delay modeling
 │   │   ├── noise.py               # Noise generators (AWGN, atmospheric, etc.)
 │   │   ├── impairments.py         # AGC, limiter, frequency offset
 │   │   ├── recording.py           # Channel state recording/playback
@@ -917,6 +993,8 @@ tests/test_vogler.py ......................                               [100%]
 ## References
 
 1. **NTIA TR-88-240**: Vogler, L.E. and Hoffmeyer, J.A., "A full-wave calculation of ionospheric Doppler spread and its application to HF channel modeling," 1988.
+
+2. **NTIA TR-90-255**: Vogler, L.E. and Hoffmeyer, J.A., "A Model for Wideband HF Propagation Channels," 1990. (Stochastic wideband channel model with dispersion)
 
 2. **ITU-R F.1487**: "Testing of HF modems with bandwidths of up to about 12 kHz using ionospheric channel simulators," 2000.
 

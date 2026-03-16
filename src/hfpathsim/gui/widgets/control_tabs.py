@@ -5,6 +5,7 @@ from PyQt6.QtCore import pyqtSignal
 
 from hfpathsim.core.parameters import VoglerParameters
 from hfpathsim.core.watterson import WattersonConfig
+from hfpathsim.core.vogler_hoffmeyer import VoglerHoffmeyerConfig
 from hfpathsim.core.noise import NoiseConfig
 from hfpathsim.core.impairments import AGCConfig, LimiterConfig, FrequencyOffsetConfig
 from hfpathsim.core.raytracing.ionosphere import IonosphereProfile
@@ -27,7 +28,8 @@ class ControlTabWidget(QTabWidget):
     # Forward signals from child panels
     parameters_changed = pyqtSignal(VoglerParameters)
     watterson_config_changed = pyqtSignal(WattersonConfig)
-    model_changed = pyqtSignal(str)  # "vogler" or "watterson"
+    vogler_hoffmeyer_config_changed = pyqtSignal(VoglerHoffmeyerConfig)
+    model_changed = pyqtSignal(str)  # "vogler", "watterson", or "vogler_hoffmeyer"
     noise_config_changed = pyqtSignal(NoiseConfig)
     agc_config_changed = pyqtSignal(AGCConfig)
     limiter_config_changed = pyqtSignal(LimiterConfig)
@@ -116,6 +118,8 @@ class ControlTabWidget(QTabWidget):
             self._channel_panel.parameters_changed.connect(self.parameters_changed)
         if hasattr(self._channel_panel, 'watterson_config_changed'):
             self._channel_panel.watterson_config_changed.connect(self.watterson_config_changed)
+        if hasattr(self._channel_panel, 'vogler_hoffmeyer_config_changed'):
+            self._channel_panel.vogler_hoffmeyer_config_changed.connect(self.vogler_hoffmeyer_config_changed)
         if hasattr(self._channel_panel, 'model_changed'):
             self._channel_panel.model_changed.connect(self.model_changed)
 
