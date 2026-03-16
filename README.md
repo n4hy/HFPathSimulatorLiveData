@@ -796,14 +796,15 @@ HFPathSimulatorLiveData/
 │           ├── recording_panel.py # Record/playback controls
 │           └── parameters.py      # Legacy parameter panel (deprecated)
 │
-├── tests/                         # Unit tests (204+ tests)
+├── tests/                         # Unit tests (224 tests)
 │   ├── test_vogler.py             # Vogler model tests
 │   ├── test_channel_models.py     # Watterson, noise, impairments
 │   ├── test_raytracing.py         # Ray tracing geometry & engine
 │   ├── test_sporadic_e.py         # Sporadic-E layer
 │   ├── test_geomagnetic.py        # Geomagnetic effects
 │   ├── test_input.py              # Input sources
-│   └── test_gpu.py                # GPU acceleration
+│   ├── test_gpu.py                # GPU acceleration
+│   └── test_spectrum.py           # Spectrum widget tests
 │
 └── scripts/
     ├── build_gpu.sh               # Build native CUDA module
@@ -921,17 +922,18 @@ PYTHONPATH=src pytest tests/ -k "test_sec_phi" -v
 ```
 ============================= test session starts ==============================
 platform linux -- Python 3.12.3, pytest-9.0.2
-collected 203 items
+collected 224 items
 
-tests/test_channel_models.py ........................................     [ 23%]
-tests/test_geomagnetic.py ................................                [ 39%]
-tests/test_gpu.py ..............................                          [ 54%]
-tests/test_input.py .............                                         [ 60%]
-tests/test_raytracing.py .................................                [ 77%]
+tests/test_channel_models.py ........................................     [ 21%]
+tests/test_geomagnetic.py ................................                [ 35%]
+tests/test_gpu.py ..............................                          [ 48%]
+tests/test_input.py .............                                         [ 54%]
+tests/test_raytracing.py .................................                [ 69%]
+tests/test_spectrum.py .....................                              [ 78%]
 tests/test_sporadic_e.py ........................                         [ 89%]
 tests/test_vogler.py ......................                               [100%]
 
-============================= 203 passed in 2.27s ==============================
+============================= 224 passed in 1.99s ==============================
 ```
 
 ### Test Summary
@@ -943,9 +945,10 @@ tests/test_vogler.py ......................                               [100%]
 | `test_gpu.py` | 30 | Native CUDA, batched FFT, Doppler fading, spectrum, benchmarks |
 | `test_input.py` | 13 | File sources, network sources, format conversion |
 | `test_raytracing.py` | 33 | Geometry, ionosphere profiles, ray engine, path finder |
+| `test_spectrum.py` | 21 | FFT computation, windowing, averaging, peak hold, GUI widget |
 | `test_sporadic_e.py` | 24 | Es config, layer injection, occurrence estimation |
 | `test_vogler.py` | 22 | Vogler parameters, HFChannel, reflection coefficients |
-| **Total** | **203** | **All passing** |
+| **Total** | **224** | **All passing** |
 
 ### Test Categories
 
