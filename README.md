@@ -109,6 +109,46 @@ The simulator implements the Vogler-Hoffmeyer reflection coefficient model from 
 - SDR support via SoapySDR (RTL-SDR, HackRF, USRP, etc.)
 - **Flex Radio DAX IQ**: Native SmartSDR integration with VITA-49 streaming
 
+### Output Destinations
+
+- **File Output**
+  - Raw binary (complex64, int16, int8)
+  - WAV audio files (mono/stereo IQ)
+  - SigMF with auto-generated metadata
+
+- **Network Streaming**
+  - ZeroMQ PUB socket for GNU Radio integration
+  - TCP server for remote clients
+  - UDP broadcast for low-latency distribution
+
+- **Audio Output**
+  - Real-time playback via sounddevice
+  - Device enumeration and selection
+  - Configurable buffer size and latency
+
+- **SDR Transmission**
+  - SoapySDR interface for TX-capable devices
+  - HackRF, USRP, LimeSDR, PlutoSDR support
+  - Center frequency and gain control
+
+- **Multiplex & Tee**
+  - Multiplex sink for parallel output to multiple destinations
+  - Tee sink for splitting streams (e.g., file + network)
+  - Independent enable/disable per sink
+
+### External Integrations
+
+- **GNU Radio**
+  - ZMQ bridge for bidirectional IQ streaming
+  - Auto-generated Python source/sink snippets
+  - Compatible with GNU Radio Companion flowgraphs
+
+- **MATLAB/Simulink**
+  - `.mat` file export of channel states (requires scipy)
+  - IQ recording with metadata
+  - Channel evolution time series export
+  - MATLAB Engine interface for live computation (optional)
+
 ### GPU Acceleration
 
 - Native CUDA module with cuFFT for maximum performance
@@ -139,7 +179,7 @@ Full-featured graphical interface with tabbed controls:
 │  └──────────────────────┘  └──────────────────────────────────────┘ │
 │                                                                      │
 ├─────────────────────────────────────────────────────────────────────┤
-│ [Input] [Channel] [Noise] [Impairments] [Ionosphere] [Recording]    │
+│ [Input][Output][Channel][Noise][Impairments][Ionosphere][Recording] │
 │ ┌─────────────────────────────────────────────────────────────────┐ │
 │ │ (Tab content - varies by selected tab)                          │ │
 │ └─────────────────────────────────────────────────────────────────┘ │
@@ -153,6 +193,7 @@ Full-featured graphical interface with tabbed controls:
 | Tab | Features |
 |-----|----------|
 | **Input** | File/Network/SDR/Flex Radio source selection, sample rate, format |
+| **Output** | File/Network/Audio/SDR sink selection, multiplex config, streaming status |
 | **Channel** | Vogler/Watterson model selection, ITU presets, ionospheric params, tap config |
 | **Noise** | AWGN, atmospheric, man-made, impulse noise with SNR control |
 | **Impairments** | AGC with gain meter, limiter with modes, frequency offset/drift |
@@ -202,7 +243,7 @@ pyqtgraph>=0.13.0
 ### Optional Dependencies
 
 ```bash
-# For SDR support
+# For SDR support (input and output)
 pip install soapysdr
 
 # For IRI-2020 ionospheric model
@@ -211,14 +252,23 @@ pip install iri2016
 # For HDF5 recording format
 pip install h5py
 
-# For ZeroMQ network input
+# For ZeroMQ network streaming
 pip install pyzmq
+
+# For audio output
+pip install sounddevice
+
+# For MATLAB .mat file export
+pip install scipy
 
 # For GPU acceleration (CuPy fallback)
 pip install cupy-cuda12x
 
 # For development/testing
 pip install pytest pytest-qt pytest-cov
+
+# Install all optional features
+pip install -e ".[all]"
 ```
 
 ### Building Native CUDA Module (Maximum Performance)
@@ -252,6 +302,15 @@ Configure the signal source:
 - **Network**: TCP/UDP/ZMQ streaming with host:port configuration
 - **SDR**: Scan for SoapySDR devices, set center frequency and gain
 - **Flex Radio**: Connect to SmartSDR radios via DAX IQ streaming (VITA-49)
+
+#### Output Tab
+Configure output destinations:
+- **File**: Save processed IQ to raw, WAV, or SigMF files
+- **Network**: Stream via ZMQ PUB, TCP server, or UDP broadcast
+- **Audio**: Real-time playback through sound card with device selection
+- **SDR**: Transmit via SoapySDR-compatible devices (HackRF, USRP, etc.)
+- **Multiplex**: Enable multiple simultaneous outputs
+- **Status**: Real-time sample count, buffer fill, and streaming indicators
 
 #### Channel Tab
 Configure the channel model:
@@ -723,6 +782,255 @@ source.close()
 - DAX IQ enabled in SmartSDR
 - Network connectivity to radio (same subnet recommended)
 
+### File Output
+
+```python
+from hfpathsim.output.file import FileOutputSink
+from hfpathsim.output.base import OutputFormat
+import numpy as np
+
+# Write raw binary IQ
+sink = FileOutputSink(
+    "output.cf32",
+    sample_rate_hz=2e6,
+    output_format=OutputFormat.COMPLEX64,
+)
+
+sink.open()
+samples = (np.random.randn(4096) + 1j * np.random.randn(4096)).astype(np.complex64)
+sink.write(samples)
+sink.close()
+
+print(f"Duration: {sink.duration:.3f} sec")
+print(f"Samples written: {sink.total_samples_written}")
+
+# Write WAV file (stereo I/Q)
+wav_sink = FileOutputSink(
+    "output.wav",
+    sample_rate_hz=48000,
+    output_format=OutputFormat.WAV_STEREO,
+)
+
+# Write SigMF with metadata
+sigmf_sink = FileOutputSink(
+    "output.sigmf-data",
+    sample_rate_hz=2e6,
+    output_format=OutputFormat.SIGMF,
+    center_freq_hz=14.074e6,  # Optional metadata
+)
+```
+
+### Network Output
+
+```python
+from hfpathsim.output.network import NetworkOutputSink, NetworkProtocol
+
+# ZMQ PUB socket for GNU Radio
+zmq_sink = NetworkOutputSink(
+    host="*",
+    port=5555,
+    protocol=NetworkProtocol.ZMQ_PUB,
+    sample_rate_hz=2e6,
+)
+
+# TCP server
+tcp_sink = NetworkOutputSink(
+    host="0.0.0.0",
+    port=5000,
+    protocol=NetworkProtocol.TCP,
+    sample_rate_hz=2e6,
+)
+
+# UDP broadcast
+udp_sink = NetworkOutputSink(
+    host="192.168.1.255",
+    port=5000,
+    protocol=NetworkProtocol.UDP,
+    sample_rate_hz=2e6,
+)
+
+zmq_sink.open()
+zmq_sink.write(samples)
+zmq_sink.close()
+```
+
+### Audio Output
+
+```python
+from hfpathsim.output.audio import AudioOutputSink
+
+# List available devices
+devices = AudioOutputSink.list_devices()
+for dev in devices:
+    print(f"{dev['index']}: {dev['name']} ({dev['max_output_channels']} ch)")
+
+# Create audio sink
+audio_sink = AudioOutputSink(
+    sample_rate_hz=48000,
+    device_index=None,  # Use default device
+    buffer_size=2048,
+)
+
+audio_sink.open()
+audio_sink.write(samples)  # Plays through speakers
+audio_sink.close()
+```
+
+### SDR Output (Transmission)
+
+```python
+from hfpathsim.output.sdr import SDROutputSink
+
+# List available TX devices
+devices = SDROutputSink.enumerate_devices()
+for dev in devices:
+    print(f"{dev['driver']}: {dev['label']}")
+
+# Create SDR sink
+sdr_sink = SDROutputSink(
+    device_args="driver=hackrf",
+    sample_rate_hz=2e6,
+    center_freq_hz=14.074e6,
+    gain_db=40.0,
+)
+
+sdr_sink.open()
+sdr_sink.write(samples)  # Transmits over the air
+sdr_sink.close()
+```
+
+**Warning:** Transmitting requires proper licensing and authorization. Ensure compliance with local regulations.
+
+### Multiplex Output (Multiple Destinations)
+
+```python
+from hfpathsim.output.multiplex import MultiplexOutputSink, TeeOutputSink
+from hfpathsim.output.file import FileOutputSink
+from hfpathsim.output.network import NetworkOutputSink, NetworkProtocol
+
+# Create multiplex sink for parallel output
+multiplex = MultiplexOutputSink(sample_rate_hz=2e6)
+
+# Add multiple destinations
+file_sink = FileOutputSink("output.cf32", sample_rate_hz=2e6)
+zmq_sink = NetworkOutputSink(host="*", port=5555, protocol=NetworkProtocol.ZMQ_PUB, sample_rate_hz=2e6)
+
+multiplex.add_sink("file", file_sink)
+multiplex.add_sink("network", zmq_sink)
+
+multiplex.open()  # Opens all sinks
+multiplex.write(samples)  # Writes to all sinks
+multiplex.close()  # Closes all sinks
+
+# Get status of each sink
+status = multiplex.get_sink_status()
+for name, info in status.items():
+    print(f"{name}: {info['samples_written']} samples, open={info['is_open']}")
+
+# Alternative: Tee sink (simpler two-way split)
+tee = TeeOutputSink(file_sink, zmq_sink)
+tee.open()
+tee.write(samples)
+tee.close()
+```
+
+### GNU Radio Integration
+
+```python
+from hfpathsim.integration.gnuradio_zmq import GNURadioZMQBridge
+
+# Create bridge for bidirectional streaming
+bridge = GNURadioZMQBridge(
+    pub_port=5555,   # HFPathSim -> GNU Radio
+    sub_port=5556,   # GNU Radio -> HFPathSim
+    sample_rate_hz=2e6,
+)
+
+# Get GNU Radio Python snippets
+source_code = bridge.create_source_snippet()
+print("GNU Radio Source Block:")
+print(source_code)
+# Output:
+# from gnuradio import zeromq
+# zmq_source = zeromq.sub_source(gr.sizeof_gr_complex, 1, 'tcp://localhost:5555', 100, False, -1, '')
+
+sink_code = bridge.create_sink_snippet()
+print("\nGNU Radio Sink Block:")
+print(sink_code)
+# Output:
+# from gnuradio import zeromq
+# zmq_sink = zeromq.pub_sink(gr.sizeof_gr_complex, 1, 'tcp://*:5556', 100, False, -1, '')
+
+# Open and stream
+with bridge:
+    bridge.send_samples(samples)
+    received = bridge.receive_samples(timeout_ms=100)
+
+# Get connection info for GRC
+info = bridge.get_connection_info()
+print(f"Source address: {info['source_address']}")
+print(f"Sink address: {info['sink_address']}")
+```
+
+### MATLAB Integration
+
+```python
+from hfpathsim.integration.matlab_interface import MATFileInterface, ChannelSnapshot
+from hfpathsim.core.channel import HFChannel
+from hfpathsim.core.parameters import VoglerParameters, ITUCondition
+import numpy as np
+
+# Create interface
+mat = MATFileInterface()
+
+# Save channel state snapshot
+channel = HFChannel(VoglerParameters.from_itu_condition(ITUCondition.MODERATE))
+state = channel.get_state()
+
+snapshot = ChannelSnapshot(
+    transfer_function=state.transfer_function,
+    impulse_response=state.impulse_response,
+    delay_spread_ms=2.0,
+    doppler_spread_hz=1.0,
+    sample_rate_hz=2e6,
+)
+
+mat.save_channel_state(snapshot, "channel_state.mat")
+
+# Load in MATLAB:
+# >> data = load('channel_state.mat');
+# >> plot(abs(data.transfer_function));
+# >> title(sprintf('Delay spread: %.1f ms', data.delay_spread_ms));
+
+# Save IQ recording with metadata
+iq_data = (np.random.randn(100000) + 1j * np.random.randn(100000)).astype(np.complex64)
+mat.save_iq_recording(
+    iq_data,
+    "recording.mat",
+    sample_rate_hz=2e6,
+    center_freq_hz=14.074e6,
+    description="Test recording with moderate fading",
+)
+
+# Save channel evolution (time series of states)
+snapshots = []
+for i in range(100):
+    channel.process(np.random.randn(4096).astype(np.complex64))
+    state = channel.get_state()
+    snapshots.append(ChannelSnapshot(
+        transfer_function=state.transfer_function,
+        impulse_response=state.impulse_response,
+        timestamp=i * 0.1,
+    ))
+
+mat.save_channel_evolution(snapshots, "evolution.mat")
+
+# Load in MATLAB:
+# >> data = load('evolution.mat');
+# >> imagesc(abs(data.transfer_functions));
+# >> xlabel('Frequency bin'); ylabel('Time index');
+```
+
 ---
 
 ## Project Structure
@@ -771,6 +1079,20 @@ HFPathSimulatorLiveData/
 │   │   ├── sdr.py                 # SoapySDR interface
 │   │   └── flexradio.py           # Flex Radio SmartSDR DAX IQ streaming
 │   │
+│   ├── output/                    # Output sinks
+│   │   ├── __init__.py            # Module exports
+│   │   ├── base.py                # OutputSink ABC, OutputFormat
+│   │   ├── file.py                # File output (raw, WAV, SigMF)
+│   │   ├── network.py             # Network streaming (ZMQ, TCP, UDP)
+│   │   ├── audio.py               # Audio playback via sounddevice
+│   │   ├── sdr.py                 # SDR transmission via SoapySDR
+│   │   └── multiplex.py           # Multiplex and Tee sinks
+│   │
+│   ├── integration/               # External tool integrations
+│   │   ├── __init__.py            # Module exports
+│   │   ├── gnuradio_zmq.py        # GNU Radio ZMQ bridge
+│   │   └── matlab_interface.py    # MATLAB/scipy .mat interface
+│   │
 │   ├── iono/                      # Ionospheric data and effects
 │   │   ├── manual.py              # Manual parameter entry
 │   │   ├── giro.py                # GIRO/DIDBase client
@@ -789,6 +1111,7 @@ HFPathSimulatorLiveData/
 │           ├── scattering.py      # S(τ,ν) 2D intensity display
 │           ├── spectrum.py        # Real-time FFT spectrum analyzer
 │           ├── input_config.py    # Input source configuration
+│           ├── output_config.py   # Output sink configuration
 │           ├── channel_panel.py   # Vogler/Watterson channel controls
 │           ├── noise_panel.py     # Noise injection controls
 │           ├── impairments_panel.py # AGC/limiter/freq offset controls
@@ -796,13 +1119,15 @@ HFPathSimulatorLiveData/
 │           ├── recording_panel.py # Record/playback controls
 │           └── parameters.py      # Legacy parameter panel (deprecated)
 │
-├── tests/                         # Unit tests (224 tests)
+├── tests/                         # Unit tests (265 tests)
 │   ├── test_vogler.py             # Vogler model tests
 │   ├── test_channel_models.py     # Watterson, noise, impairments
 │   ├── test_raytracing.py         # Ray tracing geometry & engine
 │   ├── test_sporadic_e.py         # Sporadic-E layer
 │   ├── test_geomagnetic.py        # Geomagnetic effects
 │   ├── test_input.py              # Input sources
+│   ├── test_output.py             # Output sinks (file, network, audio, SDR, multiplex)
+│   ├── test_integration.py        # External integrations (GNU Radio, MATLAB)
 │   ├── test_gpu.py                # GPU acceleration
 │   └── test_spectrum.py           # Spectrum widget tests
 │
@@ -966,18 +1291,20 @@ PYTHONPATH=src pytest tests/ -k "test_sec_phi" -v
 ```
 ============================= test session starts ==============================
 platform linux -- Python 3.12.3, pytest-9.0.2
-collected 224 items
+collected 265 items
 
-tests/test_channel_models.py ........................................     [ 21%]
-tests/test_geomagnetic.py ................................                [ 35%]
-tests/test_gpu.py ..............................                          [ 48%]
-tests/test_input.py .............                                         [ 54%]
-tests/test_raytracing.py .................................                [ 69%]
-tests/test_spectrum.py .....................                              [ 78%]
-tests/test_sporadic_e.py ........................                         [ 89%]
+tests/test_channel_models.py ........................................     [ 17%]
+tests/test_geomagnetic.py ................................                [ 30%]
+tests/test_gpu.py ..............................                          [ 41%]
+tests/test_input.py .............                                         [ 46%]
+tests/test_integration.py ....................                            [ 54%]
+tests/test_output.py ............................                         [ 64%]
+tests/test_raytracing.py .................................                [ 77%]
+tests/test_spectrum.py .....................                              [ 85%]
+tests/test_sporadic_e.py ........................                         [ 94%]
 tests/test_vogler.py ......................                               [100%]
 
-============================= 224 passed in 1.99s ==============================
+============================= 265 passed in 6.70s ==============================
 ```
 
 ### Test Summary
@@ -988,11 +1315,13 @@ tests/test_vogler.py ......................                               [100%]
 | `test_geomagnetic.py` | 32 | Indices, foF2/hmF2 scaling, storm effects, Kp/Ap conversion |
 | `test_gpu.py` | 30 | Native CUDA, batched FFT, Doppler fading, spectrum, benchmarks |
 | `test_input.py` | 13 | File sources, network sources, format conversion |
+| `test_integration.py` | 20 | GNU Radio ZMQ bridge, MATLAB .mat interface, channel snapshots |
+| `test_output.py` | 28 | File/network/audio/SDR sinks, multiplex, tee, format conversion |
 | `test_raytracing.py` | 33 | Geometry, ionosphere profiles, ray engine, path finder |
 | `test_spectrum.py` | 21 | FFT computation, windowing, averaging, peak hold, GUI widget |
 | `test_sporadic_e.py` | 24 | Es config, layer injection, occurrence estimation |
 | `test_vogler.py` | 22 | Vogler parameters, HFChannel, reflection coefficients |
-| **Total** | **224** | **All passing** |
+| **Total** | **265** | **All passing** |
 
 ### Test Categories
 
@@ -1001,12 +1330,23 @@ tests/test_vogler.py ......................                               [100%]
 - Mathematical computations (gamma functions, geometry)
 - Signal processing correctness
 - Configuration handling
+- Output sink format conversion
 
 **Integration Tests** - Test component interactions:
 - Channel processing pipeline
 - Ray tracing with ionosphere profiles
 - Geomagnetic modulation of channel parameters
 - GPU/CPU fallback behavior
+- GNU Radio ZMQ bridge streaming
+- MATLAB .mat file round-trip
+
+**Output Tests** - Test output sink functionality:
+- File writing (raw, WAV, SigMF formats)
+- Network streaming (ZMQ, TCP, UDP protocols)
+- Audio device enumeration and playback
+- SDR device enumeration
+- Multiplex sink parallel output
+- Tee sink stream splitting
 
 **Performance Tests** - Verify throughput requirements:
 - GPU batched FFT throughput (68.9 Msps achieved)
@@ -1029,6 +1369,9 @@ tests/test_vogler.py ......................                               [100%]
 | Scattering function | ~1 ms / 64x32 grid | 2D power distribution |
 | Ray tracing (single ray) | <10 ms | CPU Haselgrove integration |
 | Mode discovery (3 hops) | <100 ms | CPU path finder |
+| ZMQ output streaming | >10 Msps | PUB socket, zero-copy |
+| File output (raw) | >50 Msps | Memory-mapped I/O |
+| Audio output | 192 kHz max | sounddevice limitation |
 
 ### Targets
 - **Throughput**: 2 Msps sustained real-time
@@ -1113,12 +1456,29 @@ tests/test_vogler.py ......................                               [100%]
 - [x] VITA-49 packet parsing for DAX IQ streams
 - [x] Radio discovery and GUI integration
 
-### Phase 7: Output & Integration (Planned)
-- [ ] Real-time IQ output (sound card, network)
-- [ ] GNU Radio source/sink blocks
-- [ ] MATLAB/Simulink interface
-- [ ] Docker containerization
-- [ ] Cloud deployment option
+### Phase 7: Output & Integration ✓
+- [x] Output sink architecture with base class and format conversion
+- [x] File output sinks (raw binary, WAV, SigMF with metadata)
+- [x] Network streaming sinks (ZMQ PUB, TCP server, UDP broadcast)
+- [x] Audio output via sounddevice with device enumeration
+- [x] SDR transmission via SoapySDR (HackRF, USRP, LimeSDR, etc.)
+- [x] Multiplex sink for parallel output to multiple destinations
+- [x] Tee sink for simple two-way stream splitting
+- [x] GNU Radio ZMQ bridge with auto-generated Python snippets
+- [x] MATLAB/scipy .mat file interface for channel state export
+- [x] MATLAB Engine interface for live computation (optional)
+- [x] GUI Output tab with sink configuration and streaming status
+- [x] Main window integration with output sink processing
+- [x] Comprehensive test suite (48 new tests for output and integration)
+
+### Phase 8: Deployment & Packaging (Planned)
+- [ ] Docker containerization with GPU support
+- [ ] Docker Compose for multi-service deployment
+- [ ] PyPI package publication
+- [ ] Conda-forge recipe
+- [ ] Cloud deployment option (AWS/GCP/Azure)
+- [ ] REST API for remote control
+- [ ] Web-based dashboard alternative
 
 ---
 
@@ -1158,3 +1518,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - NVIDIA for CUDA and GPU acceleration support
 - The PyQt team for the Qt6 Python bindings
 - FlexRadio Systems for SmartSDR DAX IQ streaming specifications
+- The ZeroMQ team for high-performance messaging
+- The sounddevice team for cross-platform audio I/O
+- The SoapySDR project for unified SDR hardware abstraction
+- The GNU Radio project for DSP ecosystem integration
