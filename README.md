@@ -871,6 +871,50 @@ S(τ,ν) = exp(-τ/τ_rms) × exp(-(ν/ν_rms)²)
 - **Delay spread (τ)**: Multipath delay dispersion, causing frequency-selective fading
 - **Doppler spread (ν)**: Time-variation rate, causing temporal fading
 
+### Spread-F Ionospheric Conditions
+
+Spread-F is an ionospheric irregularity phenomenon that causes severe signal degradation on HF paths. It occurs primarily at night in equatorial regions (equatorial spread-F) and in high-latitude auroral zones (auroral spread-F). The phenomenon is caused by plasma instabilities that create irregularities in the F-layer electron density.
+
+**Physical characteristics:**
+- **Plasma bubbles**: Depleted density regions that scatter radio waves
+- **Scintillation**: Rapid amplitude and phase fluctuations
+- **Range spreading**: Ionogram echoes spread over extended delay ranges
+- **Frequency spreading**: Diffuse reflections across frequency
+
+**Model implementation** (in Vogler-Hoffmeyer channel):
+
+The spread-F effect is modeled by applying random amplitude scaling to each tap gain during processing:
+
+```
+tap_gain = tap_gain × spread_factor    where spread_factor ∈ [0.1, 1.0]
+```
+
+This per-sample random multiplication captures the scattering and amplitude fluctuations characteristic of propagation through ionospheric irregularities. The model is enabled via `spread_f_enabled=True` in `VoglerHoffmeyerConfig` or the GUI "Spread-F" checkbox.
+
+**Typical spread-F parameters:**
+| Parameter | Equatorial | Auroral |
+|-----------|------------|---------|
+| Delay spread | 500-1000 μs | 1500-2500 μs |
+| Doppler spread | 2-5 Hz | 5-15 Hz |
+| Dispersion | 150-240 μs/MHz | 200-400 μs/MHz |
+| Correlation type | Gaussian | Exponential |
+
+**Usage example:**
+
+```python
+from hfpathsim.core.vogler_hoffmeyer import (
+    VoglerHoffmeyerChannel,
+    get_vogler_hoffmeyer_preset,
+)
+
+# Use auroral spread-F preset
+config = get_vogler_hoffmeyer_preset('auroral_spread_f', sample_rate=2e6)
+channel = VoglerHoffmeyerChannel(config)
+
+# Or enable manually on any config
+config.spread_f_enabled = True
+```
+
 ### Geomagnetic Effects
 
 Space weather impacts on HF propagation:
