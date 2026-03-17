@@ -1,0 +1,305 @@
+"""GNU Radio ZMQ bridge integration for HF Path Simulator.
+
+Provides helper functions and classes for integrating with GNU Radio
+flowgraphs via ZeroMQ sockets.
+"""
+
+from dataclasses import dataclass
+from typing import Optional, Dict, Any
+import numpy as np
+
+
+@dataclass
+class ZMQConfig:
+    """ZMQ connection configuration."""
+
+    address: str = "tcp://127.0.0.1:5556"
+    hwm: int = 1000  # High water mark
+    timeout_ms: int = 100
+
+
+class GNURadioZMQBridge:
+    """Helper class for GNU Radio ZMQ integration.
+
+    Manages ZMQ connections for bidirectional communication with
+    GNU Radio flowgraphs.
+    """
+
+    def __init__(
+        self,
+        pub_address: str = "tcp://*:5556",
+        sub_address: str = "tcp://127.0.0.1:5555",
+    ):
+        """Initialize GNU Radio ZMQ bridge.
+
+        Args:
+            pub_address: Address to publish IQ samples to (for GR to receive)
+            sub_address: Address to subscribe to (for receiving from GR)
+        """
+        self._pub_address = pub_address
+        self._sub_address = sub_address
+
+        self._zmq_context = None
+        self._pub_socket = None
+        self._sub_socket = None
+
+    def open_publisher(self) -> bool:
+        """Open ZMQ publisher socket for sending to GNU Radio.
+
+        Returns:
+            True if successful
+        """
+        try:
+            import zmq
+
+            if self._zmq_context is None:
+                self._zmq_context = zmq.Context()
+
+            self._pub_socket = self._zmq_context.socket(zmq.PUB)
+            self._pub_socket.setsockopt(zmq.SNDHWM, 1000)
+            self._pub_socket.bind(self._pub_address)
+
+            return True
+
+        except ImportError:
+            print("pyzmq not installed. Install with: pip install pyzmq")
+            return False
+        except Exception as e:
+            print(f"Error opening ZMQ publisher: {e}")
+            return False
+
+    def open_subscriber(self) -> bool:
+        """Open ZMQ subscriber socket for receiving from GNU Radio.
+
+        Returns:
+            True if successful
+        """
+        try:
+            import zmq
+
+            if self._zmq_context is None:
+                self._zmq_context = zmq.Context()
+
+            self._sub_socket = self._zmq_context.socket(zmq.SUB)
+            self._sub_socket.connect(self._sub_address)
+            self._sub_socket.setsockopt_string(zmq.SUBSCRIBE, "")
+            self._sub_socket.setsockopt(zmq.RCVTIMEO, 100)
+
+            return True
+
+        except ImportError:
+            print("pyzmq not installed. Install with: pip install pyzmq")
+            return False
+        except Exception as e:
+            print(f"Error opening ZMQ subscriber: {e}")
+            return False
+
+    def send(self, samples: np.ndarray) -> bool:
+        """Send samples to GNU Radio via ZMQ.
+
+        Args:
+            samples: Complex64 samples to send
+
+        Returns:
+            True if successful
+        """
+        if self._pub_socket is None:
+            return False
+
+        try:
+            import zmq
+
+            data = samples.astype(np.complex64).tobytes()
+            self._pub_socket.send(data, zmq.NOBLOCK)
+            return True
+
+        except Exception:
+            return False
+
+    def receive(self, max_samples: int = 4096) -> Optional[np.ndarray]:
+        """Receive samples from GNU Radio via ZMQ.
+
+        Args:
+            max_samples: Maximum samples to receive
+
+        Returns:
+            Complex64 samples or None if none available
+        """
+        if self._sub_socket is None:
+            return None
+
+        try:
+            data = self._sub_socket.recv(flags=0)
+            samples = np.frombuffer(data, dtype=np.complex64)
+            return samples[:max_samples]
+
+        except Exception:
+            return None
+
+    def close(self):
+        """Close ZMQ sockets and context."""
+        if self._pub_socket:
+            self._pub_socket.close()
+            self._pub_socket = None
+
+        if self._sub_socket:
+            self._sub_socket.close()
+            self._sub_socket = None
+
+        if self._zmq_context:
+            self._zmq_context.term()
+            self._zmq_context = None
+
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit."""
+        self.close()
+        return False
+
+
+def create_gr_flowgraph_snippet(
+    zmq_address: str = "tcp://127.0.0.1:5556",
+    sample_rate: float = 2e6,
+    center_freq: float = 10e6,
+) -> str:
+    """Generate GNU Radio Companion Python snippet for ZMQ source.
+
+    This generates code that can be pasted into a GRC Python block
+    or used as a starting point for a flowgraph.
+
+    Args:
+        zmq_address: ZMQ address to connect to
+        sample_rate: Sample rate in Hz
+        center_freq: Center frequency in Hz
+
+    Returns:
+        Python code snippet for GNU Radio
+    """
+    snippet = f'''# GNU Radio ZMQ Source for HF Path Simulator
+# Generated by hfpathsim.integration.gnuradio_zmq
+
+from gnuradio import gr, zeromq
+
+class hfpathsim_source(gr.hier_block2):
+    """Hierarchical block receiving IQ from HF Path Simulator."""
+
+    def __init__(self):
+        gr.hier_block2.__init__(
+            self, "HF Path Simulator Source",
+            gr.io_signature(0, 0, 0),
+            gr.io_signature(1, 1, gr.sizeof_gr_complex),
+        )
+
+        # ZMQ SUB source - receives from HF Path Simulator
+        self.zmq_source = zeromq.sub_source(
+            gr.sizeof_gr_complex,
+            1,  # vlen
+            "{zmq_address}",
+            100,  # timeout ms
+            True,  # pass tags
+            -1,  # hwm (-1 = default)
+            "",  # key
+        )
+
+        self.connect(self.zmq_source, self)
+
+
+# Usage in flowgraph:
+# 1. Create instance: source = hfpathsim_source()
+# 2. Connect to your processing blocks
+#
+# Sample rate: {sample_rate/1e6:.3f} Msps
+# Center frequency: {center_freq/1e6:.3f} MHz
+#
+# To receive from HF Path Simulator:
+# 1. Configure Output tab with ZMQ protocol on port {zmq_address.split(":")[-1]}
+# 2. Enable output in HF Path Simulator
+# 3. Run your GNU Radio flowgraph
+'''
+    return snippet
+
+
+def create_gr_sink_snippet(
+    zmq_address: str = "tcp://127.0.0.1:5555",
+    sample_rate: float = 2e6,
+) -> str:
+    """Generate GNU Radio Companion Python snippet for ZMQ sink.
+
+    This generates code for sending IQ data TO HF Path Simulator.
+
+    Args:
+        zmq_address: ZMQ address to publish to
+        sample_rate: Sample rate in Hz
+
+    Returns:
+        Python code snippet for GNU Radio
+    """
+    snippet = f'''# GNU Radio ZMQ Sink for HF Path Simulator
+# Generated by hfpathsim.integration.gnuradio_zmq
+
+from gnuradio import gr, zeromq
+
+class hfpathsim_sink(gr.hier_block2):
+    """Hierarchical block sending IQ to HF Path Simulator."""
+
+    def __init__(self):
+        gr.hier_block2.__init__(
+            self, "HF Path Simulator Sink",
+            gr.io_signature(1, 1, gr.sizeof_gr_complex),
+            gr.io_signature(0, 0, 0),
+        )
+
+        # ZMQ PUB sink - sends to HF Path Simulator
+        self.zmq_sink = zeromq.pub_sink(
+            gr.sizeof_gr_complex,
+            1,  # vlen
+            "{zmq_address}",
+            100,  # timeout ms
+            True,  # pass tags
+            -1,  # hwm (-1 = default)
+            "",  # key
+        )
+
+        self.connect(self, self.zmq_sink)
+
+
+# Usage in flowgraph:
+# 1. Create instance: sink = hfpathsim_sink()
+# 2. Connect your signal source to sink
+#
+# Sample rate: {sample_rate/1e6:.3f} Msps
+#
+# To send to HF Path Simulator:
+# 1. Configure Input tab with ZMQ protocol on port {zmq_address.split(":")[-1]}
+# 2. Start processing in HF Path Simulator
+# 3. Run your GNU Radio flowgraph
+'''
+    return snippet
+
+
+def get_zmq_connection_info(port: int = 5556) -> Dict[str, Any]:
+    """Get ZMQ connection information for documentation/display.
+
+    Args:
+        port: ZMQ port number
+
+    Returns:
+        Dictionary with connection details
+    """
+    return {
+        "protocol": "ZeroMQ PUB/SUB",
+        "data_type": "complex64 (gr_complex)",
+        "local_bind": f"tcp://*:{port}",
+        "remote_connect": f"tcp://127.0.0.1:{port}",
+        "gr_block": "zeromq.sub_source / zeromq.pub_sink",
+        "python_module": "pyzmq",
+        "notes": [
+            "Publisher binds, subscriber connects",
+            "Use complex64 format (GR default)",
+            "Set HWM to prevent memory buildup",
+            "Recommended timeout: 100ms",
+        ],
+    }

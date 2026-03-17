@@ -16,7 +16,10 @@ dependencies = [
 [project.optional-dependencies]
 sdr = ["soapysdr"]
 iri = ["iri2016"]
+audio = ["sounddevice>=0.4.0"]
+matlab = ["scipy>=1.12"]
 dev = ["pytest", "pytest-qt"]
+all = ["soapysdr", "iri2016", "sounddevice>=0.4.0", "scipy>=1.12"]
 
 [project.scripts]
 hfpathsim = "hfpathsim.__main__:main"

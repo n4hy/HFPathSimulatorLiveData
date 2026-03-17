@@ -37,12 +37,14 @@ from hfpathsim.core.impairments import (
 from hfpathsim.core.recording import ChannelRecorder, ChannelPlayer
 from hfpathsim.input.base import InputSource
 from hfpathsim.input.file import FileInputSource
+from hfpathsim.output.base import OutputSink
 
 from .widgets.channel_display import ChannelDisplayWidget
 from .widgets.scattering import ScatteringWidget
 from .widgets.spectrum import SpectrumWidget
 from .widgets.control_tabs import ControlTabWidget
 from .widgets.input_config import InputConfigWidget
+from .widgets.output_config import OutputConfigWidget
 from .widgets.channel_panel import ChannelPanel
 from .widgets.noise_panel import NoisePanel
 from .widgets.impairments_panel import ImpairmentsPanel
@@ -72,6 +74,8 @@ class MainWindow(QMainWindow):
         self._watterson_channel: Optional[WattersonChannel] = None
         self._vh_channel: Optional[VoglerHoffmeyerChannel] = None
         self._input_source: Optional[InputSource] = None
+        self._output_sink: Optional[OutputSink] = None
+        self._output_enabled = False
         self._running = False
 
         # Current channel model selection: "vogler", "watterson", or "vogler_hoffmeyer"
@@ -153,6 +157,7 @@ class MainWindow(QMainWindow):
 
         # Create all control panels
         self._input_config = InputConfigWidget()
+        self._output_config = OutputConfigWidget()
         self._channel_panel = ChannelPanel()
         self._noise_panel = NoisePanel()
         self._impairments_panel = ImpairmentsPanel()
@@ -167,6 +172,7 @@ class MainWindow(QMainWindow):
             impairments_panel=self._impairments_panel,
             ionosphere_panel=self._ionosphere_panel,
             recording_panel=self._recording_panel,
+            output_panel=self._output_config,
         )
 
         # Connect control tab signals
@@ -205,6 +211,10 @@ class MainWindow(QMainWindow):
         self._control_tabs.recording_stopped.connect(self._on_recording_stopped)
         self._control_tabs.playback_started.connect(self._on_playback_started)
         self._control_tabs.playback_stopped.connect(self._on_playback_stopped)
+
+        # Output sink signals
+        self._control_tabs.output_sink_changed.connect(self._on_output_sink_changed)
+        self._control_tabs.output_enabled_changed.connect(self._on_output_enabled_changed)
 
     def _setup_menu(self):
         """Setup menu bar."""
@@ -734,6 +744,34 @@ class MainWindow(QMainWindow):
         self._player = None
         self._statusbar.showMessage("Playback stopped")
 
+    def _on_output_sink_changed(self, sink: OutputSink):
+        """Handle output sink change."""
+        # Close existing sink if open
+        if self._output_sink and self._output_sink.is_open:
+            self._output_sink.close()
+
+        self._output_sink = sink
+        self._statusbar.showMessage(
+            f"Output: {type(sink).__name__} @ {sink.sample_rate/1e6:.1f} Msps"
+        )
+
+    def _on_output_enabled_changed(self, enabled: bool):
+        """Handle output enable/disable."""
+        self._output_enabled = enabled
+
+        if enabled and self._output_sink and not self._output_sink.is_open:
+            if self._output_sink.open():
+                self._statusbar.showMessage("Output enabled")
+                self._output_config.set_status_message("Streaming")
+            else:
+                self._statusbar.showMessage("Failed to open output sink")
+                self._output_config.set_status_message("Failed to open")
+                self._output_enabled = False
+        elif not enabled and self._output_sink and self._output_sink.is_open:
+            self._output_sink.close()
+            self._statusbar.showMessage("Output disabled")
+            self._output_config.set_status_message("Stopped")
+
     def _on_preset_changed(self, preset_name: str):
         """Handle ITU preset selection."""
         presets = {
@@ -842,6 +880,16 @@ class MainWindow(QMainWindow):
         # Update output spectrum
         self._output_spectrum.update_data(channel_output)
 
+        # Write to output sink if enabled
+        if self._output_enabled and self._output_sink and self._output_sink.is_open:
+            written = self._output_sink.write(channel_output)
+            # Update output status periodically
+            if hasattr(self._output_sink, 'buffer_fill'):
+                self._output_config.update_status(
+                    self._output_sink.total_samples_written,
+                    self._output_sink.buffer_fill,
+                )
+
         # Update rate display
         rate = self._input_source.sample_rate / 1e6
         self._rate_label.setText(f"Rate: {rate:.1f} Msps")
@@ -930,6 +978,9 @@ class MainWindow(QMainWindow):
 
         if self._input_source and self._input_source.is_open:
             self._input_source.close()
+
+        if self._output_sink and self._output_sink.is_open:
+            self._output_sink.close()
 
         # Stop any timers
         self._process_timer.stop()

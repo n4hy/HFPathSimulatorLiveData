@@ -18,6 +18,7 @@ class ControlTabWidget(QTabWidget):
 
     Tabs:
     - Input: Input source configuration (file/network/SDR)
+    - Output: Output sink configuration (network/file/audio/SDR)
     - Channel: Vogler + Watterson channel model controls
     - Noise: AWGN, atmospheric, man-made, impulse noise
     - Impairments: AGC, limiter, frequency offset
@@ -48,11 +49,16 @@ class ControlTabWidget(QTabWidget):
     start_requested = pyqtSignal()
     stop_requested = pyqtSignal()
 
+    # Output sink signals
+    output_sink_changed = pyqtSignal(object)  # OutputSink
+    output_enabled_changed = pyqtSignal(bool)
+
     def __init__(self, parent=None):
         super().__init__(parent)
 
         # Child panel references (set by setup_panels)
         self._input_panel = None
+        self._output_panel = None
         self._channel_panel = None
         self._noise_panel = None
         self._impairments_panel = None
@@ -74,6 +80,7 @@ class ControlTabWidget(QTabWidget):
         impairments_panel: QWidget,
         ionosphere_panel: QWidget,
         recording_panel: QWidget,
+        output_panel: QWidget = None,
     ):
         """Add all control panels to tabs and connect signals.
 
@@ -84,8 +91,10 @@ class ControlTabWidget(QTabWidget):
             impairments_panel: ImpairmentsPanel for AGC/limiter/freq offset
             ionosphere_panel: IonospherePanel for ray tracing/Es/geomag
             recording_panel: RecordingPanel for record/playback
+            output_panel: OutputConfigWidget for output sink configuration
         """
         self._input_panel = input_panel
+        self._output_panel = output_panel
         self._channel_panel = channel_panel
         self._noise_panel = noise_panel
         self._impairments_panel = impairments_panel
@@ -94,6 +103,8 @@ class ControlTabWidget(QTabWidget):
 
         # Add tabs
         self.addTab(input_panel, "Input")
+        if output_panel:
+            self.addTab(output_panel, "Output")
         self.addTab(channel_panel, "Channel")
         self.addTab(noise_panel, "Noise")
         self.addTab(impairments_panel, "Impairments")
@@ -112,6 +123,13 @@ class ControlTabWidget(QTabWidget):
             self._input_panel.start_requested.connect(self.start_requested)
         if hasattr(self._input_panel, 'stop_requested'):
             self._input_panel.stop_requested.connect(self.stop_requested)
+
+        # Output panel signals
+        if self._output_panel:
+            if hasattr(self._output_panel, 'sink_changed'):
+                self._output_panel.sink_changed.connect(self.output_sink_changed)
+            if hasattr(self._output_panel, 'output_enabled'):
+                self._output_panel.output_enabled.connect(self.output_enabled_changed)
 
         # Channel panel signals
         if hasattr(self._channel_panel, 'parameters_changed'):
@@ -185,3 +203,8 @@ class ControlTabWidget(QTabWidget):
     def recording_panel(self) -> QWidget:
         """Get the recording panel."""
         return self._recording_panel
+
+    @property
+    def output_panel(self) -> QWidget:
+        """Get the output configuration panel."""
+        return self._output_panel
