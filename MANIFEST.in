@@ -1,0 +1,49 @@
+# Include documentation
+include README.md
+include LICENSE
+include CHANGELOG.md
+include CONTRIBUTING.md
+
+# Include package data
+recursive-include src/hfpathsim/gui/resources *.qss
+include src/hfpathsim/py.typed
+
+# Include CUDA/GPU build files
+include CMakeLists.txt
+include scripts/build_gpu.sh
+recursive-include src/hfpathsim/gpu/kernels *.cu *.cuh
+
+# Include tests
+recursive-include tests *.py
+
+# Include Docker files
+include Dockerfile
+include Dockerfile.cpu
+include .dockerignore
+recursive-include docker *.sh *.conf
+
+# Include compose files
+include docker-compose.yml
+include docker-compose.dev.yml
+include docker-compose.cpu.yml
+
+# Include CI/CD workflows
+recursive-include .github *.yml *.yaml
+
+# Include deployment templates
+recursive-include deploy *.yaml *.json *.md
+
+# Exclude compiled files
+global-exclude *.py[cod]
+global-exclude __pycache__
+global-exclude *.so
+global-exclude .DS_Store
+global-exclude .git*
+
+# Exclude development files
+exclude .pre-commit-config.yaml
+exclude .ruff.toml
+prune .venv
+prune .mypy_cache
+prune .pytest_cache
+prune .ruff_cache

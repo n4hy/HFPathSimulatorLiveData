@@ -1,0 +1,75 @@
+# HF Path Simulator - CPU-only Docker image
+# For environments without GPU support
+
+# ==============================================================================
+# Build Stage
+# ==============================================================================
+FROM python:3.11-slim AS builder
+
+# Prevent interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create virtual environment
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Upgrade pip
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+
+# Copy source code
+WORKDIR /build
+COPY . .
+
+# Install Python package (API only, no GPU)
+RUN pip install --no-cache-dir ".[api]"
+
+# ==============================================================================
+# Runtime Stage
+# ==============================================================================
+FROM python:3.11-slim
+
+# Labels
+LABEL maintainer="HFPathSim Contributors"
+LABEL org.opencontainers.image.title="HF Path Simulator (CPU)"
+LABEL org.opencontainers.image.description="HF ionospheric channel simulator - CPU-only version"
+LABEL org.opencontainers.image.version="0.1.0"
+LABEL org.opencontainers.image.source="https://github.com/hfpathsim/hfpathsim"
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy virtual environment from builder
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Create non-root user
+RUN useradd --create-home --shell /bin/bash hfpathsim
+USER hfpathsim
+WORKDIR /home/hfpathsim
+
+# Copy entrypoint and healthcheck scripts
+COPY --chown=hfpathsim:hfpathsim docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY --chown=hfpathsim:hfpathsim docker/healthcheck.sh /usr/local/bin/healthcheck.sh
+
+# Environment variables
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV HFPATHSIM_USE_GPU=0
+
+# Expose ports
+EXPOSE 8000 5555 5556
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD ["/usr/local/bin/healthcheck.sh"]
+
+# Default command
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["hfpathsim-server", "--host", "0.0.0.0", "--port", "8000"]

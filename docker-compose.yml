@@ -1,0 +1,109 @@
+# HF Path Simulator - Production Docker Compose
+# GPU-enabled deployment with API, web dashboard, and nginx
+
+services:
+  # ============================================================================
+  # HF Path Simulator API (GPU)
+  # ============================================================================
+  hfpathsim-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: hfpathsim:latest
+    container_name: hfpathsim-api
+    restart: unless-stopped
+
+    # GPU support (requires nvidia-container-toolkit)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+    environment:
+      - HFPATHSIM_USE_GPU=1
+      - HFPATHSIM_PORT=8000
+      - CUDA_VISIBLE_DEVICES=0
+      # Session management
+      - HFPATHSIM_MAX_SESSIONS=100
+      - HFPATHSIM_SESSION_TIMEOUT=60
+
+    ports:
+      - "8000:8000"   # REST API
+      - "5555:5555"   # ZMQ input
+      - "5556:5556"   # ZMQ output
+
+    volumes:
+      # Persist session data (optional)
+      - hfpathsim-data:/home/hfpathsim/data
+
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+    networks:
+      - hfpathsim-net
+
+  # ============================================================================
+  # Web Dashboard (React frontend)
+  # ============================================================================
+  hfpathsim-web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    image: hfpathsim-web:latest
+    container_name: hfpathsim-web
+    restart: unless-stopped
+
+    environment:
+      - REACT_APP_API_URL=http://hfpathsim-api:8000
+      - NODE_ENV=production
+
+    depends_on:
+      hfpathsim-api:
+        condition: service_healthy
+
+    networks:
+      - hfpathsim-net
+
+  # ============================================================================
+  # Nginx Reverse Proxy
+  # ============================================================================
+  nginx:
+    image: nginx:alpine
+    container_name: hfpathsim-nginx
+    restart: unless-stopped
+
+    ports:
+      - "80:80"
+      - "443:443"
+
+    volumes:
+      - ./docker/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./docker/ssl:/etc/nginx/ssl:ro  # Mount SSL certs for HTTPS
+
+    depends_on:
+      - hfpathsim-api
+      - hfpathsim-web
+
+    networks:
+      - hfpathsim-net
+
+# ==============================================================================
+# Networks
+# ==============================================================================
+networks:
+  hfpathsim-net:
+    driver: bridge
+
+# ==============================================================================
+# Volumes
+# ==============================================================================
+volumes:
+  hfpathsim-data:
+    driver: local

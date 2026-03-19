@@ -1,0 +1,85 @@
+# HF Path Simulator - Development Docker Compose
+# Hot reload enabled for rapid development
+
+services:
+  # ============================================================================
+  # HF Path Simulator API (Development)
+  # ============================================================================
+  hfpathsim-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: hfpathsim:dev
+    container_name: hfpathsim-api-dev
+
+    # GPU support
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+    environment:
+      - HFPATHSIM_USE_GPU=1
+      - HFPATHSIM_PORT=8000
+      - HFPATHSIM_DEBUG=1
+      - PYTHONDONTWRITEBYTECODE=1
+
+    ports:
+      - "8000:8000"
+      - "5555:5555"
+      - "5556:5556"
+
+    volumes:
+      # Mount source code for hot reload
+      - ./src:/opt/venv/lib/python3.11/site-packages/hfpathsim:cached
+      - ./tests:/home/hfpathsim/tests:cached
+
+    # Enable hot reload
+    command: >
+      hfpathsim-server
+      --host 0.0.0.0
+      --port 8000
+      --reload
+      --log-level debug
+
+    networks:
+      - hfpathsim-dev-net
+
+  # ============================================================================
+  # Web Dashboard (Development with hot reload)
+  # ============================================================================
+  hfpathsim-web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+      target: development  # Use development stage if available
+    image: hfpathsim-web:dev
+    container_name: hfpathsim-web-dev
+
+    environment:
+      - REACT_APP_API_URL=http://localhost:8000
+      - NODE_ENV=development
+      - CHOKIDAR_USEPOLLING=true  # For file watching in Docker
+
+    ports:
+      - "3000:3000"
+
+    volumes:
+      # Mount source for hot reload
+      - ./web/src:/app/src:cached
+      - ./web/public:/app/public:cached
+
+    command: npm start
+
+    depends_on:
+      - hfpathsim-api
+
+    networks:
+      - hfpathsim-dev-net
+
+networks:
+  hfpathsim-dev-net:
+    driver: bridge

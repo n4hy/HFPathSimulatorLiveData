@@ -1,0 +1,125 @@
+{
+  "family": "hfpathsim",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["EC2"],
+  "cpu": "4096",
+  "memory": "16384",
+  "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::ACCOUNT_ID:role/hfpathsim-task-role",
+  "containerDefinitions": [
+    {
+      "name": "hfpathsim-api",
+      "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/hfpathsim:latest",
+      "cpu": 3072,
+      "memory": 14336,
+      "memoryReservation": 8192,
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 8000,
+          "protocol": "tcp"
+        },
+        {
+          "containerPort": 5555,
+          "protocol": "tcp"
+        },
+        {
+          "containerPort": 5556,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        {
+          "name": "HFPATHSIM_USE_GPU",
+          "value": "1"
+        },
+        {
+          "name": "HFPATHSIM_PORT",
+          "value": "8000"
+        },
+        {
+          "name": "HFPATHSIM_MAX_SESSIONS",
+          "value": "100"
+        },
+        {
+          "name": "CUDA_VISIBLE_DEVICES",
+          "value": "0"
+        }
+      ],
+      "healthCheck": {
+        "command": [
+          "CMD-SHELL",
+          "curl -f http://localhost:8000/api/v1/health || exit 1"
+        ],
+        "interval": 30,
+        "timeout": 10,
+        "retries": 3,
+        "startPeriod": 60
+      },
+      "resourceRequirements": [
+        {
+          "type": "GPU",
+          "value": "1"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/hfpathsim",
+          "awslogs-region": "REGION",
+          "awslogs-stream-prefix": "api"
+        }
+      }
+    },
+    {
+      "name": "hfpathsim-web",
+      "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/hfpathsim-web:latest",
+      "cpu": 512,
+      "memory": 1024,
+      "memoryReservation": 512,
+      "essential": false,
+      "portMappings": [
+        {
+          "containerPort": 3000,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        {
+          "name": "REACT_APP_API_URL",
+          "value": "http://localhost:8000"
+        }
+      ],
+      "dependsOn": [
+        {
+          "containerName": "hfpathsim-api",
+          "condition": "HEALTHY"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/hfpathsim",
+          "awslogs-region": "REGION",
+          "awslogs-stream-prefix": "web"
+        }
+      }
+    }
+  ],
+  "placementConstraints": [
+    {
+      "type": "memberOf",
+      "expression": "attribute:ecs.instance-type =~ g4dn.* or attribute:ecs.instance-type =~ g5.*"
+    }
+  ],
+  "tags": [
+    {
+      "key": "Application",
+      "value": "hfpathsim"
+    },
+    {
+      "key": "Environment",
+      "value": "production"
+    }
+  ]
+}

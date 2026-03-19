@@ -1,0 +1,64 @@
+{% set name = "hfpathsim" %}
+{% set version = "0.1.0" %}
+
+package:
+  name: {{ name|lower }}
+  version: {{ version }}
+
+source:
+  url: https://pypi.io/packages/source/{{ name[0] }}/{{ name }}/{{ name }}-{{ version }}.tar.gz
+  sha256: PLACEHOLDER_SHA256
+
+build:
+  number: 0
+  noarch: python
+  script: {{ PYTHON }} -m pip install . -vv
+  entry_points:
+    - hfpathsim = hfpathsim.__main__:main
+    - hfpathsim-server = hfpathsim.api.app:main
+
+requirements:
+  host:
+    - python >=3.11
+    - pip
+    - setuptools >=68
+  run:
+    - python >=3.11
+    - numpy >=1.26
+    - scipy >=1.12
+    - pyzmq >=25.0
+
+test:
+  imports:
+    - hfpathsim
+    - hfpathsim.core
+    - hfpathsim.engine
+  commands:
+    - pip check
+    - hfpathsim --help || true
+  requires:
+    - pip
+
+about:
+  home: https://github.com/hfpathsim/hfpathsim
+  license: MIT
+  license_family: MIT
+  license_file: LICENSE
+  summary: HF Channel Simulator with Vogler-Hoffmeyer IPM and GPU acceleration
+  description: |
+    HF Path Simulator is a comprehensive ionospheric channel simulator
+    implementing the Vogler-Hoffmeyer Ionospheric Propagation Model (IPM),
+    Watterson tapped delay line model, and wideband stochastic channel models.
+
+    Features:
+    - Multiple channel models (Vogler IPM, Watterson TDL, Vogler-Hoffmeyer)
+    - GPU acceleration with CUDA
+    - Real-time signal processing
+    - REST API for remote control
+    - Web dashboard
+  dev_url: https://github.com/hfpathsim/hfpathsim
+  doc_url: https://hfpathsim.readthedocs.io
+
+extra:
+  recipe-maintainers:
+    - hfpathsim-maintainers

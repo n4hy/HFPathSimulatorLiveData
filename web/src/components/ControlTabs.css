@@ -1,0 +1,130 @@
+/* ControlTabs component styles */
+
+.control-tabs {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.control-tabs .tabs {
+  flex-shrink: 0;
+}
+
+.tab-content {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.control-panel {
+  padding: var(--spacing-sm) 0;
+}
+
+.control-panel h4 {
+  margin-bottom: var(--spacing-md);
+  font-size: 0.95rem;
+}
+
+.model-select {
+  display: flex;
+  gap: var(--spacing-sm);
+  margin-bottom: var(--spacing-md);
+}
+
+.model-btn {
+  flex: 1;
+  padding: var(--spacing-sm);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
+.model-btn.active {
+  background: var(--accent-primary);
+  border-color: var(--accent-primary);
+  color: var(--bg-primary);
+}
+
+.control-group {
+  margin-bottom: var(--spacing-md);
+}
+
+.control-group label {
+  display: block;
+  margin-bottom: var(--spacing-xs);
+}
+
+.control-group input[type="range"] {
+  margin-bottom: var(--spacing-xs);
+}
+
+.control-group .value {
+  display: block;
+  text-align: right;
+  font-size: 0.9rem;
+  color: var(--accent-primary);
+}
+
+.checkbox-group label {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  cursor: pointer;
+}
+
+.checkbox-group input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+}
+
+.apply-btn {
+  width: 100%;
+  margin-top: var(--spacing-sm);
+}
+
+.apply-btn.small {
+  width: auto;
+  padding: var(--spacing-xs) var(--spacing-md);
+  font-size: 0.8rem;
+}
+
+.reset-btn {
+  width: 100%;
+  margin-top: var(--spacing-lg);
+}
+
+.vogler-controls,
+.watterson-controls {
+  margin-top: var(--spacing-md);
+  padding-top: var(--spacing-md);
+  border-top: 1px solid var(--border-color);
+}
+
+.impairment-section {
+  padding: var(--spacing-sm);
+  background: var(--bg-secondary);
+  border-radius: 4px;
+  margin-bottom: var(--spacing-sm);
+}
+
+.impairment-section .impairment-header {
+  margin-bottom: var(--spacing-sm);
+}
+
+.impairment-section .impairment-header label {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.impairment-section .impairment-header input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+}
+
+.impairment-section .control-group {
+  margin-bottom: var(--spacing-sm);
+  padding-left: var(--spacing-lg);
+}

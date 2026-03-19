@@ -1,0 +1,91 @@
+# HF Path Simulator - CPU-only Docker Compose
+# For environments without GPU support
+
+services:
+  # ============================================================================
+  # HF Path Simulator API (CPU-only)
+  # ============================================================================
+  hfpathsim-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.cpu
+    image: hfpathsim:cpu
+    container_name: hfpathsim-api-cpu
+    restart: unless-stopped
+
+    environment:
+      - HFPATHSIM_USE_GPU=0
+      - HFPATHSIM_PORT=8000
+      - HFPATHSIM_MAX_SESSIONS=50
+      - HFPATHSIM_SESSION_TIMEOUT=60
+
+    ports:
+      - "8000:8000"
+      - "5555:5555"
+      - "5556:5556"
+
+    volumes:
+      - hfpathsim-cpu-data:/home/hfpathsim/data
+
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+    networks:
+      - hfpathsim-cpu-net
+
+  # ============================================================================
+  # Web Dashboard
+  # ============================================================================
+  hfpathsim-web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    image: hfpathsim-web:latest
+    container_name: hfpathsim-web-cpu
+    restart: unless-stopped
+
+    environment:
+      - REACT_APP_API_URL=http://hfpathsim-api:8000
+      - NODE_ENV=production
+
+    depends_on:
+      hfpathsim-api:
+        condition: service_healthy
+
+    networks:
+      - hfpathsim-cpu-net
+
+  # ============================================================================
+  # Nginx Reverse Proxy
+  # ============================================================================
+  nginx:
+    image: nginx:alpine
+    container_name: hfpathsim-nginx-cpu
+    restart: unless-stopped
+
+    ports:
+      - "80:80"
+      - "443:443"
+
+    volumes:
+      - ./docker/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./docker/ssl:/etc/nginx/ssl:ro
+
+    depends_on:
+      - hfpathsim-api
+      - hfpathsim-web
+
+    networks:
+      - hfpathsim-cpu-net
+
+networks:
+  hfpathsim-cpu-net:
+    driver: bridge
+
+volumes:
+  hfpathsim-cpu-data:
+    driver: local

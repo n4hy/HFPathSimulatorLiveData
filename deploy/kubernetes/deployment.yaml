@@ -1,0 +1,238 @@
+---
+# HF Path Simulator - Kubernetes Deployment
+# Requires NVIDIA GPU Operator installed in cluster
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hfpathsim
+  labels:
+    app: hfpathsim
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hfpathsim-config
+  namespace: hfpathsim
+data:
+  HFPATHSIM_USE_GPU: "1"
+  HFPATHSIM_PORT: "8000"
+  HFPATHSIM_MAX_SESSIONS: "100"
+  HFPATHSIM_SESSION_TIMEOUT: "60"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hfpathsim-api
+  namespace: hfpathsim
+  labels:
+    app: hfpathsim
+    component: api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hfpathsim
+      component: api
+  template:
+    metadata:
+      labels:
+        app: hfpathsim
+        component: api
+    spec:
+      containers:
+        - name: hfpathsim-api
+          image: hfpathsim:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+            - name: zmq-input
+              containerPort: 5555
+              protocol: TCP
+            - name: zmq-output
+              containerPort: 5556
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: hfpathsim-config
+          resources:
+            requests:
+              memory: "4Gi"
+              cpu: "2"
+              nvidia.com/gpu: "1"
+            limits:
+              memory: "16Gi"
+              cpu: "8"
+              nvidia.com/gpu: "1"
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: /home/hfpathsim/data
+      volumes:
+        - name: data
+          emptyDir: {}
+      nodeSelector:
+        nvidia.com/gpu.present: "true"
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hfpathsim-web
+  namespace: hfpathsim
+  labels:
+    app: hfpathsim
+    component: web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hfpathsim
+      component: web
+  template:
+    metadata:
+      labels:
+        app: hfpathsim
+        component: web
+    spec:
+      containers:
+        - name: hfpathsim-web
+          image: hfpathsim-web:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          env:
+            - name: REACT_APP_API_URL
+              value: "http://hfpathsim-api:8000"
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hfpathsim-api
+  namespace: hfpathsim
+  labels:
+    app: hfpathsim
+    component: api
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+    - name: zmq-input
+      port: 5555
+      targetPort: zmq-input
+    - name: zmq-output
+      port: 5556
+      targetPort: zmq-output
+  selector:
+    app: hfpathsim
+    component: api
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hfpathsim-web
+  namespace: hfpathsim
+  labels:
+    app: hfpathsim
+    component: web
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+  selector:
+    app: hfpathsim
+    component: web
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hfpathsim
+  namespace: hfpathsim
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/websocket-services: "hfpathsim-api"
+spec:
+  rules:
+    - host: hfpathsim.example.com
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: hfpathsim-api
+                port:
+                  number: 8000
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: hfpathsim-web
+                port:
+                  number: 3000
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: hfpathsim-web
+  namespace: hfpathsim
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: hfpathsim-web
+  minReplicas: 1
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
