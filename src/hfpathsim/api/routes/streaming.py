@@ -6,7 +6,7 @@ import json
 import time
 import numpy as np
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException
-from typing import Optional, Dict, Set
+from typing import Optional, Dict, Set, Any
 import logging
 
 from ...engine import SimulationEngine
@@ -14,6 +14,33 @@ from ...engine.session import get_session_manager
 
 router = APIRouter(prefix="/stream", tags=["streaming"])
 logger = logging.getLogger(__name__)
+
+
+def _convert_to_json_serializable(obj: Any) -> Any:
+    """Convert numpy types and other non-JSON-serializable types to native Python types.
+
+    Args:
+        obj: Object to convert (can be dict, list, numpy array, or scalar)
+
+    Returns:
+        JSON-serializable version of the object
+    """
+    if isinstance(obj, dict):
+        return {k: _convert_to_json_serializable(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [_convert_to_json_serializable(item) for item in obj]
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, (np.integer, np.int32, np.int64)):
+        return int(obj)
+    elif isinstance(obj, (np.floating, np.float32, np.float64)):
+        return float(obj)
+    elif isinstance(obj, np.bool_):
+        return bool(obj)
+    elif isinstance(obj, (np.complex64, np.complex128)):
+        return {"real": float(obj.real), "imag": float(obj.imag)}
+    else:
+        return obj
 
 
 # Track active WebSocket connections
@@ -269,12 +296,13 @@ async def stream_state(
             # Get state
             state = engine.get_state()
 
-            # Send update
-            await websocket.send_json({
+            # Send update (convert numpy types to JSON-serializable)
+            message = _convert_to_json_serializable({
                 "type": "state",
                 "timestamp": time.time(),
                 **state,
             })
+            await websocket.send_json(message)
 
             await asyncio.sleep(interval)
 
