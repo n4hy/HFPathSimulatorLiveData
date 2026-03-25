@@ -3,6 +3,7 @@
 import json
 import urllib.request
 import urllib.error
+import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
@@ -129,7 +130,7 @@ class GIROClient:
                 "toDate": end_time.strftime("%Y-%m-%d %H:%M:%S"),
             }
 
-            query = "&".join(f"{k}={v}" for k, v in params.items())
+            query = urllib.parse.urlencode(params)
             url = f"{self.BASE_URL}?{query}"
 
             # Fetch data
