@@ -101,8 +101,8 @@ class MATFileInterface:
         if metadata:
             data["metadata"] = metadata
 
-        data["_source"] = "hfpathsim"
-        data["_version"] = "0.3.0"
+        data["hfpathsim_source"] = "hfpathsim"
+        data["hfpathsim_version"] = "0.3.0"
 
         return self._save_mat(filepath, data)
 
@@ -137,7 +137,7 @@ class MATFileInterface:
             "num_samples": len(samples),
             "duration_sec": len(samples) / sample_rate_hz,
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "_source": "hfpathsim",
+            "hfpathsim_source": "hfpathsim",
         }
 
         if metadata:
@@ -181,7 +181,7 @@ class MATFileInterface:
             "impulse_responses": np.array([s.impulse_response for s in snapshots]),
             "scattering_functions": np.array([s.scattering_function for s in snapshots]),
             "timestamps": [s.timestamp.isoformat() for s in snapshots],
-            "_source": "hfpathsim",
+            "hfpathsim_source": "hfpathsim",
         }
 
         if time_axis_sec is not None:
