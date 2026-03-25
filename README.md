@@ -175,6 +175,32 @@ The simulator implements the Vogler-Hoffmeyer reflection coefficient model from 
 - **Latency Analysis**: Percentile-based latency measurement
 - **Report Generation**: Export to JSON and HTML formats
 
+### Real-World Validation (NEW)
+
+Compare simulated channels against measured data from real ionospheric campaigns:
+
+- **Reference Datasets**
+  - NTIA TR-90-255 measurements (quiet, disturbed, auroral, spread-F)
+  - ITU-R F.1487 standardized test conditions
+  - Watterson 1970 original IEEE validation data
+
+- **Statistical Analysis**
+  - Delay spread (RMS, mean, window)
+  - Doppler spread (RMS, bandwidth)
+  - Coherence bandwidth and time
+  - Scattering function S(τ,ν) computation and comparison
+
+- **Fading Statistics**
+  - Rayleigh distribution fit test (K-S test)
+  - Level crossing rate
+  - Average fade duration
+  - Fade depth measurement
+
+- **Validation Reports**
+  - Automated pass/fail tests with tolerances
+  - JSON and text report generation
+  - Scattering function correlation analysis
+
 ### PyQt6 Dashboard GUI
 
 Full-featured graphical interface with tabbed controls:
@@ -872,6 +898,98 @@ suite.print_report()
 report = generate_report(benchmark_results=results)
 export_report_json(report, "performance_report.json")
 export_report_html(report, "performance_report.html")
+```
+
+### Real-World Validation
+
+```python
+from hfpathsim.validation import (
+    # Reference datasets
+    NTIA_MIDLATITUDE_QUIET,
+    NTIA_MIDLATITUDE_DISTURBED,
+    ITU_F1487_MODERATE,
+    WATTERSON_1970_GOOD,
+    get_reference_dataset,
+    list_reference_datasets,
+    # Statistics
+    compute_delay_spread,
+    compute_doppler_spread,
+    compute_coherence_bandwidth,
+    compute_coherence_time,
+    compute_fading_statistics,
+    rayleigh_fit_test,
+    compute_scattering_function,
+    # Validation
+    ChannelValidator,
+    validate_channel,
+)
+import numpy as np
+
+# List available reference datasets
+print(list_reference_datasets())
+# ['ntia_midlatitude_quiet', 'itu_f1487_moderate', ...]
+
+# Get reference by name
+ref = get_reference_dataset("ntia_midlatitude_quiet")
+print(f"Delay spread: {ref.delay_spread_ms} ms, Doppler spread: {ref.doppler_spread_hz} Hz")
+
+# Compute delay spread from impulse response
+h = np.exp(-np.arange(100) / 50).astype(complex)  # Exponential decay
+result = compute_delay_spread(h, sample_rate_hz=48000)
+print(f"RMS delay spread: {result.rms_delay_spread_ms:.3f} ms")
+print(f"Coherence bandwidth: {compute_coherence_bandwidth(result.rms_delay_spread_ms):.2f} kHz")
+
+# Compute Doppler spread from fading coefficients
+fading = (np.random.randn(1000) + 1j * np.random.randn(1000)) / np.sqrt(2)
+result = compute_doppler_spread(fading, sample_rate_hz=100)
+print(f"RMS Doppler spread: {result.rms_doppler_spread_hz:.3f} Hz")
+print(f"Coherence time: {compute_coherence_time(result.rms_doppler_spread_hz):.1f} ms")
+
+# Test if envelope follows Rayleigh distribution
+envelope = np.abs(fading)
+pvalue = rayleigh_fit_test(envelope)
+print(f"Rayleigh fit p-value: {pvalue:.4f} (>0.05 = good fit)")
+
+# Full fading statistics
+stats = compute_fading_statistics(envelope, sample_rate_hz=100)
+print(f"Fade depth: {stats.fade_depth_db:.1f} dB")
+print(f"Level crossing rate: {stats.level_crossing_rate_hz:.3f} Hz")
+
+# Validate channel against reference
+report = validate_channel(
+    fading_coefficients=fading,
+    reference="ntia_midlatitude_quiet",
+)
+
+# Print validation summary
+report.print_summary()
+
+# Check pass rate and failed tests
+print(f"Pass rate: {report.get_pass_rate():.1f}%")
+for test in report.get_failed_tests():
+    print(f"FAILED: {test.name} - {test.details}")
+
+# Export report to JSON
+with open("validation_report.json", "w") as f:
+    f.write(report.to_json())
+
+# Full validation with impulse responses
+validator = ChannelValidator(
+    reference=NTIA_MIDLATITUDE_QUIET,
+    delay_tolerance_pct=50.0,
+    doppler_tolerance_pct=50.0,
+)
+
+# Create synthetic channel data
+n_snapshots, n_taps = 100, 50
+impulse_responses = np.random.randn(n_snapshots, n_taps) + 1j * np.random.randn(n_snapshots, n_taps)
+
+report = validator.validate(
+    impulse_responses=impulse_responses,
+    fading_coefficients=fading,
+    sample_rate_hz=48000,
+    snapshot_rate_hz=100,
+)
 ```
 
 ### File Input

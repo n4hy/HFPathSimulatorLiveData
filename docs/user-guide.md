@@ -19,6 +19,7 @@ This comprehensive guide covers all features of HF Path Simulator. If you're new
 9. [Command Line Interface](#command-line-interface)
 10. [Performance Tuning](#performance-tuning)
     - [Profiling Infrastructure](#profiling-infrastructure)
+11. [Real-World Validation](#real-world-validation)
 
 ---
 
@@ -714,3 +715,207 @@ If you encounter issues:
    - Operating system
    - GPU model (if applicable)
    - Minimal code to reproduce the problem
+
+---
+
+## Real-World Validation
+
+HF Path Simulator includes a validation module for comparing simulated channels against measured data from real-world ionospheric propagation campaigns.
+
+### Reference Datasets
+
+The validation module includes reference data from authoritative sources:
+
+```python
+from hfpathsim.validation import (
+    # NTIA TR-90-255 measurements (May 1988)
+    NTIA_MIDLATITUDE_QUIET,
+    NTIA_MIDLATITUDE_DISTURBED,
+    NTIA_AURORAL,
+    NTIA_SPREAD_F,
+    # ITU-R F.1487 standardized test parameters
+    ITU_F1487_QUIET,
+    ITU_F1487_MODERATE,
+    ITU_F1487_DISTURBED,
+    ITU_F1487_FLUTTER,
+    # Watterson 1970 original IEEE measurements
+    WATTERSON_1970_GOOD,
+    WATTERSON_1970_MODERATE,
+    WATTERSON_1970_POOR,
+)
+
+# List all available reference datasets
+from hfpathsim.validation import list_reference_datasets
+print(list_reference_datasets())
+# ['ntia_midlatitude_quiet', 'itu_f1487_moderate', ...]
+
+# Get a dataset by name
+from hfpathsim.validation import get_reference_dataset
+ref = get_reference_dataset("ntia_midlatitude_quiet")
+print(f"Delay spread: {ref.delay_spread_ms} ms")
+print(f"Doppler spread: {ref.doppler_spread_hz} Hz")
+```
+
+**Reference Dataset Sources:**
+
+| Source | Description | Conditions |
+|--------|-------------|------------|
+| NTIA TR-90-255 | Vogler-Hoffmeyer measurements (1988) | Quiet, Disturbed, Auroral, Spread-F |
+| ITU-R F.1487 | Standard HF modem testing | Quiet, Moderate, Disturbed, Flutter |
+| Watterson 1970 | Original IEEE validation | Good, Moderate, Poor |
+
+### Computing Channel Statistics
+
+Analyze simulated channel data:
+
+```python
+from hfpathsim.validation import (
+    compute_delay_spread,
+    compute_doppler_spread,
+    compute_coherence_bandwidth,
+    compute_coherence_time,
+    compute_fading_statistics,
+    rayleigh_fit_test,
+)
+
+# Delay spread from impulse response
+result = compute_delay_spread(impulse_response, sample_rate_hz=48000)
+print(f"RMS delay spread: {result.rms_delay_spread_ms:.3f} ms")
+print(f"Coherence bandwidth: {compute_coherence_bandwidth(result.rms_delay_spread_ms):.2f} kHz")
+
+# Doppler spread from fading coefficients
+result = compute_doppler_spread(fading_samples, sample_rate_hz=100)
+print(f"RMS Doppler spread: {result.rms_doppler_spread_hz:.3f} Hz")
+print(f"Coherence time: {compute_coherence_time(result.rms_doppler_spread_hz):.1f} ms")
+
+# Fading statistics from envelope
+stats = compute_fading_statistics(envelope, sample_rate_hz=48000)
+print(f"Fade depth: {stats.fade_depth_db:.1f} dB")
+print(f"Level crossing rate: {stats.level_crossing_rate_hz:.3f} Hz")
+print(f"Avg fade duration: {stats.avg_fade_duration_ms:.1f} ms")
+
+# Test if envelope follows Rayleigh distribution
+pvalue = rayleigh_fit_test(envelope)
+if pvalue > 0.05:
+    print("Rayleigh distribution fits well")
+```
+
+### Validating a Channel
+
+Compare your simulation against reference measurements:
+
+```python
+from hfpathsim.validation import (
+    ChannelValidator,
+    validate_channel,
+    NTIA_MIDLATITUDE_QUIET,
+)
+
+# Quick validation with convenience function
+report = validate_channel(
+    impulse_responses=h,           # [n_snapshots, n_taps] complex array
+    fading_coefficients=fading,    # Time-varying complex fading
+    sample_rate_hz=48000,
+    snapshot_rate_hz=100,
+    reference="ntia_midlatitude_quiet",
+)
+
+# Print results
+report.print_summary()
+
+# Or use the validator class for more control
+validator = ChannelValidator(
+    reference=NTIA_MIDLATITUDE_QUIET,
+    delay_tolerance_pct=50.0,      # Allow 50% deviation
+    doppler_tolerance_pct=50.0,
+)
+
+report = validator.validate(
+    impulse_responses=h,
+    fading_coefficients=fading,
+    sample_rate_hz=48000,
+)
+
+# Check results
+print(f"Pass rate: {report.get_pass_rate():.1f}%")
+print(f"Overall status: {report.overall_status.value}")
+
+# Get failed tests
+for test in report.get_failed_tests():
+    print(f"FAILED: {test.name} - {test.details}")
+
+# Export to JSON
+with open("validation_report.json", "w") as f:
+    f.write(report.to_json())
+```
+
+### Validation Tests
+
+The validator performs these tests:
+
+| Test | Description | Pass Criteria |
+|------|-------------|---------------|
+| RMS Delay Spread | Multipath time dispersion | Within tolerance of reference |
+| RMS Doppler Spread | Frequency dispersion | Within tolerance of reference |
+| Rayleigh Fit | Fading distribution | K-S test p-value > 0.05 |
+| Fade Depth | Peak-to-trough range | Within tolerance of reference |
+| Level Crossing Rate | Fading rate | Within tolerance of reference |
+| Scattering Function | S(τ,ν) correlation | Correlation > threshold |
+
+### Example: Validating CCIR 520 Channel
+
+```python
+from hfpathsim.core import CCIR520Channel
+from hfpathsim.validation import validate_channel, WATTERSON_1970_MODERATE
+
+# Create a CCIR 520 moderate channel
+channel = CCIR520Channel.moderate(sample_rate_hz=48000)
+
+# Generate test signal
+test_signal = np.random.randn(480000) + 1j * np.random.randn(480000)
+
+# Process through channel
+output = channel.process(test_signal)
+
+# Validate against Watterson 1970 moderate reference
+report = validate_channel(
+    envelope=np.abs(output),
+    reference=WATTERSON_1970_MODERATE,
+)
+
+report.print_summary()
+```
+
+### Scattering Function Analysis
+
+Compare the delay-Doppler power distribution:
+
+```python
+from hfpathsim.validation import (
+    compute_scattering_function,
+    compare_scattering_functions,
+)
+
+# Compute scattering function from channel snapshots
+delay_axis, doppler_axis, S = compute_scattering_function(
+    channel_snapshots,     # [n_snapshots, n_delay_samples]
+    sample_rate_hz=48000,
+    snapshot_rate_hz=100,
+    n_delay_bins=64,
+    n_doppler_bins=64,
+)
+
+# Compare with reference
+comparison = compare_scattering_functions(
+    S_simulated=S,
+    S_reference=reference.scattering_function,
+    delay_axis_sim=delay_axis,
+    delay_axis_ref=reference.delay_axis_ms,
+    doppler_axis_sim=doppler_axis,
+    doppler_axis_ref=reference.doppler_axis_hz,
+)
+
+print(f"Correlation: {comparison.correlation:.3f}")
+print(f"RMSE: {comparison.rmse:.4f}")
+print(f"Shape match score: {comparison.shape_match_score:.3f}")
+```
