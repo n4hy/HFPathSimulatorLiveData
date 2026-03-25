@@ -62,6 +62,11 @@ Step-by-step guides for common tasks:
 | REST API | Remote control from any programming language |
 | Web Dashboard | Browser-based monitoring and control |
 | Performance Profiling | CPU timing, GPU profiling, memory tracking, benchmarks |
+| Real-World Validation | Compare against NTIA/ITU-R measured channel data |
+
+### Development
+
+- [Test Results](test-results.md) - Current test suite status (428 tests)
 
 ## System Requirements
 
