@@ -1,0 +1,105 @@
+# HF Path Simulator Helm Chart Values
+
+# API deployment configuration
+api:
+  image:
+    repository: hfpathsim
+    tag: latest
+    pullPolicy: Always
+  replicas: 1
+  resources:
+    requests:
+      memory: "4Gi"
+      cpu: "2"
+      nvidia.com/gpu: "1"
+    limits:
+      memory: "16Gi"
+      cpu: "8"
+      nvidia.com/gpu: "1"
+  service:
+    type: ClusterIP
+    port: 8000
+    zmqInputPort: 5555
+    zmqOutputPort: 5556
+  env:
+    HFPATHSIM_USE_GPU: "1"
+    HFPATHSIM_PORT: "8000"
+    HFPATHSIM_MAX_SESSIONS: "100"
+    HFPATHSIM_SESSION_TIMEOUT: "60"
+  livenessProbe:
+    path: /api/v1/health
+    initialDelaySeconds: 30
+    periodSeconds: 30
+    timeoutSeconds: 10
+  readinessProbe:
+    path: /api/v1/health
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    timeoutSeconds: 5
+
+# Web dashboard configuration
+web:
+  enabled: true
+  image:
+    repository: hfpathsim-web
+    tag: latest
+    pullPolicy: Always
+  replicas: 1
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+  service:
+    type: ClusterIP
+    port: 3000
+  livenessProbe:
+    path: /health
+    initialDelaySeconds: 10
+    periodSeconds: 30
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 5
+    targetCPUUtilization: 70
+
+# Ingress configuration
+ingress:
+  enabled: false
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/websocket-services: "hfpathsim-api"
+  host: hfpathsim.example.com
+  tls:
+    enabled: false
+    secretName: hfpathsim-tls
+
+# GPU node configuration
+gpu:
+  nodeSelector:
+    nvidia.com/gpu.present: "true"
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+
+# Persistence (optional)
+persistence:
+  enabled: false
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  size: 10Gi
+
+# Image pull secrets (for private registries)
+imagePullSecrets: []
+
+# Namespace (usually set via helm install -n)
+namespace: hfpathsim
+
+# Full name override
+fullnameOverride: ""
+nameOverride: ""

@@ -1,0 +1,19 @@
+apiVersion: v2
+name: hfpathsim
+description: HF Path Simulator - GPU-accelerated HF ionospheric propagation simulator
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - hf
+  - propagation
+  - ionosphere
+  - radio
+  - simulation
+  - gpu
+  - cuda
+home: https://github.com/n4hy/HFPathSimulatorLiveData
+maintainers:
+  - name: HF Path Simulator Team
+sources:
+  - https://github.com/n4hy/HFPathSimulatorLiveData

@@ -1,0 +1,60 @@
+#cloud-config
+# HF Path Simulator - Azure Cloud-Init Configuration
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - apt-transport-https
+  - ca-certificates
+  - curl
+  - gnupg
+  - lsb-release
+
+write_files:
+  - path: /opt/hfpathsim/setup.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      set -ex
+
+      echo "Installing Docker..."
+      curl -fsSL https://get.docker.com | sh
+      systemctl enable docker
+      systemctl start docker
+
+      echo "Installing NVIDIA drivers..."
+      apt-get install -y linux-headers-$(uname -r)
+      distribution=$(. /etc/os-release;echo $ID$VERSION_ID | sed -e 's/\.//g')
+      wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+      dpkg -i cuda-keyring_1.1-1_all.deb
+      apt-get update
+      apt-get install -y cuda-drivers
+
+      echo "Installing NVIDIA Container Toolkit..."
+      curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+      curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
+        sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
+        tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+      apt-get update
+      apt-get install -y nvidia-container-toolkit
+      nvidia-ctk runtime configure --runtime=docker
+      systemctl restart docker
+
+      echo "Pulling and running HF Path Simulator..."
+      docker pull ${docker_image}
+      docker run -d \
+        --name hfpathsim \
+        --gpus all \
+        -p 8000:8000 \
+        -p 5555:5555 \
+        -p 5556:5556 \
+        --restart unless-stopped \
+        ${docker_image}
+
+      echo "HF Path Simulator setup complete!"
+
+runcmd:
+  - /opt/hfpathsim/setup.sh > /var/log/hfpathsim-setup.log 2>&1
+
+final_message: "HF Path Simulator cloud-init completed after $UPTIME seconds"
