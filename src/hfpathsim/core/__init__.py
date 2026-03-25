@@ -31,6 +31,32 @@ from .recording import (
     RecordingMetadata,
 )
 
+# ITU-R standardized channel models
+from .itu_channels import (
+    # Enums
+    CCIR520Condition,
+    ITURF1289Condition,
+    ITURF1487Condition,
+    # Channel specifications
+    CCIR520ChannelSpec,
+    ITURF1289ChannelSpec,
+    ITURF1487ChannelSpec,
+    # Presets
+    CCIR520_PRESETS,
+    ITURF1289_PRESETS,
+    ITURF1487_PRESETS,
+    # Channel classes
+    CCIR520Channel,
+    ITURF1289Channel,
+    ITURF1487Channel,
+    # Utilities
+    list_ccir520_presets,
+    list_iturf1289_presets,
+    list_iturf1487_presets,
+    get_preset_info,
+    create_channel,
+)
+
 # Ray tracing components
 from .raytracing import (
     # Geometry
@@ -93,6 +119,24 @@ __all__ = [
     "ChannelPlayer",
     "ChannelSnapshot",
     "RecordingMetadata",
+    # ITU-R standardized channel models
+    "CCIR520Condition",
+    "ITURF1289Condition",
+    "ITURF1487Condition",
+    "CCIR520ChannelSpec",
+    "ITURF1289ChannelSpec",
+    "ITURF1487ChannelSpec",
+    "CCIR520_PRESETS",
+    "ITURF1289_PRESETS",
+    "ITURF1487_PRESETS",
+    "CCIR520Channel",
+    "ITURF1289Channel",
+    "ITURF1487Channel",
+    "list_ccir520_presets",
+    "list_iturf1289_presets",
+    "list_iturf1487_presets",
+    "get_preset_info",
+    "create_channel",
     # Ray tracing - Geometry
     "EARTH_RADIUS_KM",
     "great_circle_distance",

@@ -55,11 +55,13 @@ Step-by-step guides for common tasks:
 |---------|-------------|
 | GPU Acceleration | Process millions of samples per second using CUDA |
 | Multiple Channel Models | Watterson, Vogler, Vogler-Hoffmeyer models |
+| ITU-R Standardized Models | CCIR 520, ITU-R F.520, F.1289, F.1487 presets |
 | Real-time Processing | Sub-millisecond latency for live applications |
 | SDR Support | Works with HackRF, USRP, LimeSDR, RTL-SDR |
 | GNU Radio Integration | ZMQ bridge for seamless GNU Radio workflows |
 | REST API | Remote control from any programming language |
 | Web Dashboard | Browser-based monitoring and control |
+| Performance Profiling | CPU timing, GPU profiling, memory tracking, benchmarks |
 
 ## System Requirements
 

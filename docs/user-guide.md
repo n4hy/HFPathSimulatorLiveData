@@ -6,6 +6,10 @@ This comprehensive guide covers all features of HF Path Simulator. If you're new
 
 1. [Overview](#overview)
 2. [Channel Models](#channel-models)
+   - [Watterson Model](#watterson-model)
+   - [Vogler Model](#vogler-model)
+   - [Vogler-Hoffmeyer Model](#vogler-hoffmeyer-model)
+   - [ITU-R Standardized Models](#itu-r-standardized-channel-models)
 3. [Configuration](#configuration)
 4. [Input Sources](#input-sources)
 5. [Output Destinations](#output-destinations)
@@ -14,6 +18,7 @@ This comprehensive guide covers all features of HF Path Simulator. If you're new
 8. [Using the GUI](#using-the-gui)
 9. [Command Line Interface](#command-line-interface)
 10. [Performance Tuning](#performance-tuning)
+    - [Profiling Infrastructure](#profiling-infrastructure)
 
 ---
 
@@ -119,6 +124,55 @@ engine.configure_vogler_hoffmeyer(
 - **Sporadic E**: Summer daytime enhancement, can create unexpected propagation
 - **Spread-F**: Nighttime equatorial irregularities causing signal scattering
 - **Magnetic Storm**: Severe ionospheric disturbance during solar events
+
+### ITU-R Standardized Channel Models
+
+For compliance testing and standardized modem evaluation, use the ITU-R channel models:
+
+```python
+from hfpathsim.core.itu_channels import (
+    CCIR520Channel, CCIR520Condition,
+    ITURF1289Channel, ITURF1289Condition,
+    ITURF1487Channel,
+)
+
+# CCIR 520 / ITU-R F.520-2 - Classic standardized presets
+channel = CCIR520Channel.good()      # Best case: 0.5ms delay, 0.1Hz Doppler
+channel = CCIR520Channel.moderate()  # Typical: 1ms delay, 0.5Hz Doppler
+channel = CCIR520Channel.poor()      # Worst case: 2ms delay, 1Hz Doppler
+channel = CCIR520Channel.flutter()   # Auroral: 1ms delay, 10Hz Doppler
+
+# ITU-R F.1289 - Wideband channels (up to 24 kHz bandwidth)
+channel = ITURF1289Channel.from_preset(
+    ITURF1289Condition.MID_LATITUDE_MODERATE,
+    bandwidth_khz=12.0,
+)
+
+# ITU-R F.1487 - Modem testing per Table 1
+channel = ITURF1487Channel.quiet()     # τ=0.5ms, ν=0.1Hz
+channel = ITURF1487Channel.moderate()  # τ=2ms, ν=1Hz
+channel = ITURF1487Channel.disturbed() # τ=4ms, ν=2Hz
+channel = ITURF1487Channel.flutter()   # τ=7ms, ν=10Hz
+```
+
+**CCIR 520 / ITU-R F.520-2 Presets:**
+
+| Preset | Delay Spread | Doppler Spread | Description |
+|--------|-------------|----------------|-------------|
+| good_low_latency | 0.5 ms | 0.1 Hz | Stable mid-latitude daytime |
+| moderate | 1.0 ms | 0.5 Hz | Typical HF conditions |
+| poor | 2.0 ms | 1.0 Hz | Disturbed ionosphere |
+| poor_multipath | 4.0 ms | 1.0 Hz | Severe multipath |
+| flutter | 1.0 ms | 10.0 Hz | High-latitude auroral |
+
+**ITU-R F.1289 Wideband Presets:**
+
+| Preset | Delay Spread | Doppler Spread | Coherence BW |
+|--------|-------------|----------------|--------------|
+| low_latitude_quiet | 0.3 ms | 0.05 Hz | 500 kHz |
+| mid_latitude_moderate | 2.0 ms | 1.0 Hz | 80 kHz |
+| high_latitude_disturbed | 7.0 ms | 5.0 Hz | 20 kHz |
+| high_latitude_flutter | 2.0 ms | 10.0 Hz | 80 kHz |
 
 ---
 
@@ -515,6 +569,57 @@ python -m hfpathsim.cli process input.wav output.wav \
 ---
 
 ## Performance Tuning
+
+### Profiling Infrastructure
+
+HF Path Simulator includes a comprehensive profiling module for measuring performance:
+
+```python
+from hfpathsim.profiling import (
+    Timer, timer, profile_function,
+    GPUProfiler, gpu_timer,
+    MemoryProfiler, track_memory,
+    Benchmark, BenchmarkSuite, run_throughput_benchmark,
+    generate_report, export_report_html,
+)
+
+# Simple timing with context manager
+with timer("channel_processing") as t:
+    output = engine.process(samples)
+print(f"Processing took {t.elapsed_ms:.3f}ms")
+
+# Decorate functions for automatic profiling
+@profile_function(print_result=True)
+def process_signal(data):
+    return engine.process(data)
+
+# GPU kernel profiling
+profiler = GPUProfiler()
+profiler.start_session("gpu_processing")
+
+with profiler.profile("fft", n_samples=4096):
+    result = gpu_fft(data)
+
+report = profiler.end_session()
+profiler.print_session_report("gpu_processing")
+
+# Memory tracking
+with track_memory("large_allocation", print_result=True):
+    data = np.zeros((10_000_000,), dtype=np.complex64)
+
+# Throughput benchmarking
+results = run_throughput_benchmark(
+    func=engine.process,
+    sample_sizes=[1024, 4096, 16384, 65536],
+    iterations=50,
+)
+for size, result in results.items():
+    print(f"n={size}: {result.throughput_msps:.2f} Msps")
+
+# Generate HTML performance report
+report = generate_report(benchmark_results=results)
+export_report_html(report, "performance_report.html")
+```
 
 ### Measuring Performance
 

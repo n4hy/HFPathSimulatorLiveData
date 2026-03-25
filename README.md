@@ -46,6 +46,13 @@ The simulator implements the Vogler-Hoffmeyer reflection coefficient model from 
   - Disturbed: τ=4ms, ν=2Hz (magnetic storm)
   - Flutter: τ=7ms, ν=10Hz (high-latitude)
 
+- **ITU-R Standardized Channel Models (NEW)**
+  - CCIR 520 / ITU-R F.520-2: Classic HF channel simulator presets
+  - ITU-R F.1289: Wideband HF channel (up to 24 kHz bandwidth)
+  - ITU-R F.1487: HF modem testing conditions
+  - Latitude-specific presets (equatorial, mid-latitude, high-latitude)
+  - Frequency-selective fading and group delay dispersion
+
 ### Signal Processing
 
 - **Real-Time Processing**
@@ -158,6 +165,15 @@ The simulator implements the Vogler-Hoffmeyer reflection coefficient model from 
 - CuPy fallback with automatic kernel compilation
 - NumPy CPU fallback for compatibility
 - Designed for RTX 5090 (Blackwell), supports sm_80-90 architectures
+
+### Profiling and Benchmarking (NEW)
+
+- **CPU Timing**: Decorators, context managers, and statistics collection
+- **GPU Profiling**: CUDA event-based timing for accurate kernel measurement
+- **Memory Tracking**: CPU and GPU memory usage monitoring
+- **Throughput Benchmarks**: Measure samples/second across configurations
+- **Latency Analysis**: Percentile-based latency measurement
+- **Report Generation**: Export to JSON and HTML formats
 
 ### PyQt6 Dashboard GUI
 
@@ -467,6 +483,85 @@ delay_axis, doppler_axis, S = channel.compute_scattering_function(
 print(f"Scattering function shape: {S.shape}")  # (64, 64)
 ```
 
+### ITU-R Standardized Channel Models
+
+```python
+from hfpathsim.core.itu_channels import (
+    # CCIR 520 / ITU-R F.520-2 model
+    CCIR520Channel, CCIR520Condition,
+    # ITU-R F.1289 wideband model
+    ITURF1289Channel, ITURF1289Condition,
+    # ITU-R F.1487 modem testing model
+    ITURF1487Channel, ITURF1487Condition,
+    # Utilities
+    list_ccir520_presets, list_iturf1289_presets,
+    get_preset_info, create_channel,
+)
+import numpy as np
+
+# CCIR 520 / ITU-R F.520-2 - Classic standardized HF channel
+# Available presets: good_low_latency, good_high_latency, moderate,
+#                    moderate_multipath, poor, poor_multipath, flutter
+channel = CCIR520Channel.good()  # Good conditions: 0.5ms delay, 0.1Hz Doppler
+channel = CCIR520Channel.moderate()  # Moderate: 1ms delay, 0.5Hz Doppler
+channel = CCIR520Channel.poor()  # Poor: 2ms delay, 1Hz Doppler
+channel = CCIR520Channel.flutter()  # Flutter: 1ms delay, 10Hz Doppler
+
+# Or create from specific preset
+channel = CCIR520Channel.from_preset(CCIR520Condition.POOR_MULTIPATH)
+
+# ITU-R F.1289 - Wideband HF channel (up to 24 kHz bandwidth)
+# Includes frequency-selective fading and group delay dispersion
+wideband = ITURF1289Channel.from_preset(
+    ITURF1289Condition.MID_LATITUDE_MODERATE,
+    sample_rate_hz=48000,
+    bandwidth_khz=12.0,
+)
+
+# Check frequency selectivity
+coherence_bw = wideband.get_coherence_bandwidth()
+is_selective = wideband.is_frequency_selective()
+print(f"Coherence BW: {coherence_bw:.0f} kHz, Freq-selective: {is_selective}")
+
+# ITU-R F.1487 - Modem testing (bandwidths up to 12 kHz)
+# Table 1 presets: quiet, moderate, disturbed, flutter
+channel = ITURF1487Channel.quiet()     # τ=0.5ms, ν=0.1Hz
+channel = ITURF1487Channel.moderate()  # τ=2ms, ν=1Hz
+channel = ITURF1487Channel.disturbed() # τ=4ms, ν=2Hz
+channel = ITURF1487Channel.flutter()   # τ=7ms, ν=10Hz
+
+# List all available presets
+print("CCIR 520 presets:", list_ccir520_presets())
+print("F.1289 presets:", list_iturf1289_presets())
+
+# Get preset details
+info = get_preset_info("moderate")
+print(f"Moderate: delay={info['delay_spread_ms']}ms, doppler={info['doppler_spread_hz']}Hz")
+
+# Create channel by preset name (auto-selects model type)
+channel = create_channel("mid_latitude_disturbed")  # Returns ITURF1289Channel
+
+# Process signal
+input_signal = (np.random.randn(4096) + 1j * np.random.randn(4096)).astype(np.complex64)
+output = channel.process_block(input_signal)
+```
+
+**Available ITU-R Presets:**
+
+| Standard | Preset | Delay Spread | Doppler Spread | Use Case |
+|----------|--------|--------------|----------------|----------|
+| CCIR 520 | good_low_latency | 0.5 ms | 0.1 Hz | Stable mid-latitude daytime |
+| CCIR 520 | moderate | 1.0 ms | 0.5 Hz | Typical conditions |
+| CCIR 520 | poor | 2.0 ms | 1.0 Hz | Disturbed ionosphere |
+| CCIR 520 | flutter | 1.0 ms | 10.0 Hz | High-latitude auroral |
+| F.1289 | low_latitude_quiet | 0.3 ms | 0.05 Hz | Equatorial stable |
+| F.1289 | mid_latitude_moderate | 2.0 ms | 1.0 Hz | Typical wideband |
+| F.1289 | high_latitude_flutter | 2.0 ms | 10.0 Hz | Auroral wideband |
+| F.1487 | quiet | 0.5 ms | 0.1 Hz | ITU modem test - good |
+| F.1487 | moderate | 2.0 ms | 1.0 Hz | ITU modem test - typical |
+| F.1487 | disturbed | 4.0 ms | 2.0 Hz | ITU modem test - poor |
+| F.1487 | flutter | 7.0 ms | 10.0 Hz | ITU modem test - severe |
+
 ### Full Processing Chain
 
 ```python
@@ -677,6 +772,106 @@ fading = generate_doppler_fading(
 
 # Fast spectrum computation for real-time GUI
 power_db = compute_spectrum_db(input_signal[:4096], reference=1.0)
+```
+
+### Profiling and Benchmarking
+
+```python
+from hfpathsim.profiling import (
+    # CPU timing
+    Timer, timer, profile_function, get_timing_stats, print_timing_report,
+    # GPU profiling
+    GPUProfiler, gpu_timer, CUDATimer, get_gpu_memory_info,
+    # Memory profiling
+    MemoryProfiler, get_memory_usage, track_memory,
+    # Benchmarking
+    Benchmark, BenchmarkSuite, run_throughput_benchmark, run_latency_benchmark,
+    # Reports
+    generate_report, export_report_json, export_report_html,
+)
+import numpy as np
+
+# Simple timing with context manager
+with timer("fft_processing") as t:
+    result = np.fft.fft(data)
+print(f"FFT took {t.elapsed_ms:.3f}ms")
+
+# Function profiling decorator
+@profile_function(print_result=True)
+def process_channel(signal, H):
+    return np.fft.ifft(np.fft.fft(signal) * H)
+
+# Get timing statistics after multiple calls
+for _ in range(100):
+    process_channel(data, H)
+print_timing_report()
+
+# GPU kernel timing
+with gpu_timer("cuda_fft") as t:
+    import cupy as cp
+    result = cp.fft.fft(cp.asarray(data))
+print(f"GPU FFT took {t.elapsed_ms:.3f}ms")
+
+# Comprehensive GPU profiling session
+profiler = GPUProfiler()
+profiler.start_session("channel_processing")
+
+with profiler.profile("fft", n_samples=4096):
+    X = np.fft.fft(data)
+
+with profiler.profile("multiply", n_samples=4096):
+    Y = X * H
+
+with profiler.profile("ifft", n_samples=4096):
+    output = np.fft.ifft(Y)
+
+report = profiler.end_session()
+profiler.print_session_report("channel_processing")
+
+# Memory profiling
+with track_memory("data_processing", print_result=True) as tracker:
+    large_data = np.zeros((1000000,), dtype=np.complex64)
+    processed = np.fft.fft(large_data)
+
+# Check GPU memory
+gpu_mem = get_gpu_memory_info()
+print(f"GPU: {gpu_mem.used_gb:.2f}/{gpu_mem.total_gb:.2f} GB ({gpu_mem.utilization_pct:.1f}%)")
+
+# Throughput benchmark
+def my_process(data):
+    return np.fft.fft(data)
+
+results = run_throughput_benchmark(
+    func=my_process,
+    sample_sizes=[1024, 4096, 16384, 65536],
+    iterations=50,
+)
+
+for size, result in results.items():
+    print(f"n={size}: {result.throughput_msps:.2f} Msps")
+
+# Latency benchmark with percentiles
+latency = run_latency_benchmark(
+    func=my_process,
+    n_samples=4096,
+    iterations=1000,
+    percentiles=[50, 90, 99],
+)
+print(f"Latency: mean={latency['mean_us']:.1f}us, p99={latency['p99_us']:.1f}us")
+
+# Full benchmark suite
+suite = BenchmarkSuite("hf_channel")
+suite.add("fft_4096", lambda d: np.fft.fft(d),
+          setup=lambda: np.random.randn(4096).astype(np.complex64), n_samples=4096)
+suite.add("overlap_save", overlap_save_func,
+          setup=setup_overlap_save, n_samples=65536)
+results = suite.run_all(iterations=100)
+suite.print_report()
+
+# Generate comprehensive performance report
+report = generate_report(benchmark_results=results)
+export_report_json(report, "performance_report.json")
+export_report_html(report, "performance_report.html")
 ```
 
 ### File Input
@@ -1051,6 +1246,7 @@ HFPathSimulatorLiveData/
 │   │   ├── vogler_ipm.py          # Vogler reflection coefficient model
 │   │   ├── watterson.py           # Watterson TDL model
 │   │   ├── vogler_hoffmeyer.py    # Vogler-Hoffmeyer wideband stochastic model (NTIA 90-255)
+│   │   ├── itu_channels.py        # ITU-R F.520, F.1289, F.1487 standardized channels
 │   │   ├── dispersion.py          # Frequency-dependent group delay modeling
 │   │   ├── noise.py               # Noise generators (AWGN, atmospheric, etc.)
 │   │   ├── impairments.py         # AGC, limiter, frequency offset
@@ -1093,6 +1289,14 @@ HFPathSimulatorLiveData/
 │   │   ├── gnuradio_zmq.py        # GNU Radio ZMQ bridge
 │   │   └── matlab_interface.py    # MATLAB/scipy .mat interface
 │   │
+│   ├── profiling/                 # Performance profiling and benchmarking
+│   │   ├── __init__.py            # Module exports
+│   │   ├── timing.py              # CPU timing utilities
+│   │   ├── gpu_profiler.py        # CUDA kernel profiling
+│   │   ├── memory.py              # Memory usage tracking
+│   │   ├── benchmarks.py          # Throughput/latency benchmarks
+│   │   └── reports.py             # Report generation (JSON, HTML)
+│   │
 │   ├── iono/                      # Ionospheric data and effects
 │   │   ├── manual.py              # Manual parameter entry
 │   │   ├── giro.py                # GIRO/DIDBase client
@@ -1119,9 +1323,11 @@ HFPathSimulatorLiveData/
 │           ├── recording_panel.py # Record/playback controls
 │           └── parameters.py      # Legacy parameter panel (deprecated)
 │
-├── tests/                         # Unit tests (265 tests)
+├── tests/                         # Unit tests (290+ tests)
 │   ├── test_vogler.py             # Vogler model tests
 │   ├── test_channel_models.py     # Watterson, noise, impairments
+│   ├── test_itu_channels.py       # ITU-R F.520, F.1289, F.1487 models
+│   ├── test_profiling.py          # Profiling and benchmarking
 │   ├── test_raytracing.py         # Ray tracing geometry & engine
 │   ├── test_sporadic_e.py         # Sporadic-E layer
 │   ├── test_geomagnetic.py        # Geomagnetic effects
