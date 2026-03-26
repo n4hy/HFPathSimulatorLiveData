@@ -6,6 +6,9 @@ Implements various noise sources:
 - Man-made noise
 - Impulse noise
 
+Uses CUDA/C++ compiled implementations when available with automatic
+fallback to pure Python.
+
 Reference: ITU-R P.372-16, "Radio noise"
 """
 
@@ -13,6 +16,14 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 import numpy as np
+
+# Try to import compiled GPU implementations
+try:
+    from ..gpu import NoiseGenerator as _NoiseGeneratorCompiled
+    _HAS_COMPILED = _NoiseGeneratorCompiled is not None
+except ImportError:
+    _HAS_COMPILED = False
+    _NoiseGeneratorCompiled = None
 
 
 class NoiseType(Enum):
@@ -63,6 +74,7 @@ class NoiseGenerator:
     """Generator for various noise types.
 
     Combines multiple noise sources into a realistic HF noise environment.
+    Uses CUDA/C++ compiled implementation when available for high performance.
     """
 
     def __init__(
@@ -70,6 +82,8 @@ class NoiseGenerator:
         config: Optional[NoiseConfig] = None,
         sample_rate_hz: float = 2_000_000,
         seed: Optional[int] = None,
+        use_compiled: bool = True,
+        max_samples: int = 65536,
     ):
         """Initialize noise generator.
 
@@ -77,10 +91,25 @@ class NoiseGenerator:
             config: Noise configuration
             sample_rate_hz: Sample rate in Hz
             seed: Random seed for reproducibility
+            use_compiled: Use compiled CUDA/C++ implementation if available
+            max_samples: Maximum samples per block (for compiled backend)
         """
         self.config = config or NoiseConfig()
         self.sample_rate = sample_rate_hz
         self._rng = np.random.default_rng(seed)
+        self._seed = seed if seed is not None else 42
+
+        # Try to use compiled implementation
+        self._compiled_processor = None
+        if use_compiled and _HAS_COMPILED:
+            try:
+                self._compiled_processor = _NoiseGeneratorCompiled(
+                    sample_rate_hz,
+                    max_samples,
+                    self._seed,
+                )
+            except Exception:
+                self._compiled_processor = None
 
         # Pre-compute noise power levels
         self._update_noise_levels()
@@ -183,6 +212,17 @@ class NoiseGenerator:
         Returns:
             Complex noise samples
         """
+        # Use compiled implementation if available
+        if self._compiled_processor is not None:
+            try:
+                noise_real, noise_imag = self._compiled_processor.generate_awgn(
+                    self._awgn_variance, n_samples
+                )
+                return (noise_real + 1j * noise_imag).astype(np.complex64)
+            except Exception:
+                pass  # Fall through to Python implementation
+
+        # Python fallback
         std = np.sqrt(self._awgn_variance / 2)
         noise = (
             self._rng.standard_normal(n_samples)
@@ -207,6 +247,20 @@ class NoiseGenerator:
             return np.zeros(n_samples, dtype=np.complex64)
 
         power = self._noise_figure_to_power(self._fa_atmospheric)
+
+        # Use compiled implementation if available
+        # The compiled version uses Vd parameter (0.0-1.0) to control impulsiveness
+        if self._compiled_processor is not None:
+            try:
+                # Map power to noise power, use 0.5 as moderate Vd
+                noise_real, noise_imag = self._compiled_processor.generate_atmospheric(
+                    power, 0.5, n_samples
+                )
+                return (noise_real + 1j * noise_imag).astype(np.complex64)
+            except Exception:
+                pass  # Fall through to Python implementation
+
+        # Python fallback
         std = np.sqrt(power / 2)
 
         # Atmospheric noise is non-Gaussian - use mixture model
@@ -282,6 +336,22 @@ class NoiseGenerator:
         if not self.config.enable_impulse:
             return np.zeros(n_samples, dtype=np.complex64)
 
+        # Use compiled implementation if available
+        if self._compiled_processor is not None:
+            try:
+                # Convert rate to probability per sample
+                impulse_rate = self.config.impulse_rate_hz / self.sample_rate
+                amp_linear = 10 ** (self.config.impulse_amplitude_db / 20)
+                noise_floor = self._awgn_variance * 0.01  # Background noise level
+
+                noise_real, noise_imag = self._compiled_processor.generate_impulse(
+                    impulse_rate, amp_linear, noise_floor, n_samples
+                )
+                return (noise_real + 1j * noise_imag).astype(np.complex64)
+            except Exception:
+                pass  # Fall through to Python implementation
+
+        # Python fallback
         noise = np.zeros(n_samples, dtype=np.complex64)
 
         # Average time between impulses

@@ -109,6 +109,98 @@ extern "C" {
                                          int n_samples, float fading_re, float fading_im);
     void debug_power_stages(void* state_ptr, const float* input_real, const float* input_imag,
                             int n_samples, float* powers_out);
+
+    // Watterson channel - GPU
+    void* init_watterson_gpu(float sample_rate, int max_taps, int max_delay_samples,
+                             int max_samples_per_block, unsigned long seed);
+    int configure_watterson_taps_gpu(void* state_ptr, const int* delays, const float* amplitudes,
+                                     const float* doppler_spreads, const int* spectrum_types,
+                                     const int* is_rician, const float* k_factors,
+                                     int n_taps, float update_rate);
+    int process_watterson_gpu(void* state_ptr, const float* input_real, const float* input_imag,
+                              int n_samples, float* output_real, float* output_imag);
+    int get_watterson_gains_gpu(void* state_ptr, float* gains_real, float* gains_imag, int max_taps);
+    void reset_watterson_gpu(void* state_ptr);
+    void free_watterson_gpu(void* state_ptr);
+
+    // Watterson channel - CPU fallback
+    void* init_watterson_cpu(float sample_rate, int max_taps, int max_delay_samples,
+                             int max_samples_per_block, unsigned long seed);
+    int configure_watterson_taps_cpu(void* state_ptr, const int* delays, const float* amplitudes,
+                                     const float* doppler_spreads, const int* spectrum_types,
+                                     const int* is_rician, const float* k_factors,
+                                     int n_taps, float update_rate);
+    int process_watterson_cpu(void* state_ptr, const float* input_real, const float* input_imag,
+                              int n_samples, float* output_real, float* output_imag);
+    int get_watterson_gains_cpu(void* state_ptr, float* gains_real, float* gains_imag, int max_taps);
+    void reset_watterson_cpu(void* state_ptr);
+    void free_watterson_cpu(void* state_ptr);
+
+    // AGC - GPU
+    void* init_agc_gpu(float sample_rate, float attack_time_ms, float release_time_ms,
+                       float hold_time_ms, bool hang_agc, float target_level_db,
+                       float max_gain_db, float min_gain_db, float soft_knee_db, int max_samples);
+    int process_agc_gpu(void* state_ptr, const float* input_real, const float* input_imag,
+                        int n_samples, float* output_real, float* output_imag);
+    float get_agc_gain_db(void* state_ptr);
+    void reset_agc_gpu(void* state_ptr);
+    void free_agc_gpu(void* state_ptr);
+
+    // AGC - CPU fallback
+    void* init_agc_cpu(float sample_rate, float attack_time_ms, float release_time_ms,
+                       float hold_time_ms, bool hang_agc, float target_level_db,
+                       float max_gain_db, float min_gain_db, float soft_knee_db, int max_samples);
+    int process_agc_cpu(void* state_ptr, const float* input_real, const float* input_imag,
+                        int n_samples, float* output_real, float* output_imag);
+    float get_agc_gain_db_cpu(void* state_ptr);
+    void reset_agc_cpu(void* state_ptr);
+    void free_agc_cpu(void* state_ptr);
+
+    // Limiter - GPU
+    void* init_limiter_gpu(float threshold_db, int mode, int max_samples);
+    int process_limiter_gpu(void* state_ptr, const float* input_real, const float* input_imag,
+                            int n_samples, float* output_real, float* output_imag);
+    void set_limiter_params_gpu(void* state_ptr, float threshold_db, int mode);
+    void free_limiter_gpu(void* state_ptr);
+
+    // Limiter - CPU fallback
+    void* init_limiter_cpu(float threshold_db, int mode, int max_samples);
+    int process_limiter_cpu(void* state_ptr, const float* input_real, const float* input_imag,
+                            int n_samples, float* output_real, float* output_imag);
+    void set_limiter_params_cpu(void* state_ptr, float threshold_db, int mode);
+    void free_limiter_cpu(void* state_ptr);
+
+    // Noise generator - GPU
+    void* init_noise_gen_gpu(float sample_rate, int max_samples, unsigned long seed);
+    int generate_awgn_gpu(void* state_ptr, float noise_power, int n_samples,
+                          float* noise_real, float* noise_imag);
+    int generate_atmospheric_gpu(void* state_ptr, float noise_power, float vd,
+                                 int n_samples, float* noise_real, float* noise_imag);
+    int generate_impulse_gpu(void* state_ptr, float impulse_rate, float impulse_amplitude,
+                             float noise_floor, int n_samples, float* noise_real, float* noise_imag);
+    int set_noise_spectrum_shape_gpu(void* state_ptr, const float* spectrum_shape, int n_bins);
+    int generate_colored_noise_gpu(void* state_ptr, float noise_power, int n_samples,
+                                   float* noise_real, float* noise_imag);
+    int add_noise_gpu(void* state_ptr, float* signal_real, float* signal_imag,
+                      int noise_type, float param1, float param2, float param3, int n_samples);
+    void reset_noise_gen_gpu(void* state_ptr, unsigned long seed);
+    void free_noise_gen_gpu(void* state_ptr);
+
+    // Noise generator - CPU fallback
+    void* init_noise_gen_cpu(float sample_rate, int max_samples, unsigned long seed);
+    int generate_awgn_cpu(void* state_ptr, float noise_power, int n_samples,
+                          float* noise_real, float* noise_imag);
+    int generate_atmospheric_cpu(void* state_ptr, float noise_power, float vd,
+                                 int n_samples, float* noise_real, float* noise_imag);
+    int generate_impulse_cpu(void* state_ptr, float impulse_rate, float impulse_amplitude,
+                             float noise_floor, int n_samples, float* noise_real, float* noise_imag);
+    int set_noise_spectrum_shape_cpu(void* state_ptr, const float* spectrum_shape, int n_bins);
+    int generate_colored_noise_cpu(void* state_ptr, float noise_power, int n_samples,
+                                   float* noise_real, float* noise_imag);
+    int add_noise_cpu(void* state_ptr, float* signal_real, float* signal_imag,
+                      int noise_type, float param1, float param2, float param3, int n_samples);
+    void reset_noise_gen_cpu(void* state_ptr, unsigned long seed);
+    void free_noise_gen_cpu(void* state_ptr);
 }
 
 /**
@@ -601,15 +693,415 @@ private:
 };
 
 /**
+ * Watterson channel processor wrapper class.
+ */
+class WattersonProcessor {
+public:
+    WattersonProcessor(
+        float sample_rate,
+        int max_taps = 16,
+        int max_delay_samples = 1024,
+        int max_samples = 4096,
+        unsigned long seed = 42
+    ) : sample_rate_(sample_rate), max_taps_(max_taps),
+        max_delay_(max_delay_samples), max_samples_(max_samples),
+        use_gpu_(false), state_(nullptr)
+    {
+        // Try GPU first
+        state_ = init_watterson_gpu(sample_rate, max_taps, max_delay_samples,
+                                    max_samples, seed);
+        if (state_) {
+            use_gpu_ = true;
+        } else {
+            // Fall back to CPU
+            state_ = init_watterson_cpu(sample_rate, max_taps, max_delay_samples,
+                                        max_samples, seed);
+            if (!state_) {
+                throw std::runtime_error("Failed to initialize Watterson processor");
+            }
+            use_gpu_ = false;
+        }
+    }
+
+    ~WattersonProcessor() {
+        if (state_) {
+            if (use_gpu_) {
+                free_watterson_gpu(state_);
+            } else {
+                free_watterson_cpu(state_);
+            }
+        }
+    }
+
+    void configure_taps(
+        py::array_t<int> delays,
+        py::array_t<float> amplitudes,
+        py::array_t<float> doppler_spreads,
+        py::array_t<int> spectrum_types,
+        py::array_t<int> is_rician,
+        py::array_t<float> k_factors,
+        float update_rate
+    ) {
+        py::buffer_info d_buf = delays.request();
+        int n_taps = d_buf.size;
+
+        int ret;
+        if (use_gpu_) {
+            ret = configure_watterson_taps_gpu(state_,
+                static_cast<int*>(d_buf.ptr),
+                static_cast<float*>(amplitudes.request().ptr),
+                static_cast<float*>(doppler_spreads.request().ptr),
+                static_cast<int*>(spectrum_types.request().ptr),
+                static_cast<int*>(is_rician.request().ptr),
+                static_cast<float*>(k_factors.request().ptr),
+                n_taps, update_rate);
+        } else {
+            ret = configure_watterson_taps_cpu(state_,
+                static_cast<int*>(d_buf.ptr),
+                static_cast<float*>(amplitudes.request().ptr),
+                static_cast<float*>(doppler_spreads.request().ptr),
+                static_cast<int*>(spectrum_types.request().ptr),
+                static_cast<int*>(is_rician.request().ptr),
+                static_cast<float*>(k_factors.request().ptr),
+                n_taps, update_rate);
+        }
+        if (ret != 0) {
+            throw std::runtime_error("Failed to configure Watterson taps");
+        }
+    }
+
+    py::array_t<std::complex<float>> process(py::array_t<std::complex<float>> input) {
+        py::buffer_info buf = input.request();
+        int N = buf.size;
+        std::complex<float>* input_ptr = static_cast<std::complex<float>*>(buf.ptr);
+
+        std::vector<float> in_real(N), in_imag(N);
+        for (int i = 0; i < N; i++) {
+            in_real[i] = input_ptr[i].real();
+            in_imag[i] = input_ptr[i].imag();
+        }
+
+        std::vector<float> out_real(N), out_imag(N);
+
+        int ret;
+        if (use_gpu_) {
+            ret = process_watterson_gpu(state_, in_real.data(), in_imag.data(), N,
+                                        out_real.data(), out_imag.data());
+        } else {
+            ret = process_watterson_cpu(state_, in_real.data(), in_imag.data(), N,
+                                        out_real.data(), out_imag.data());
+        }
+        if (ret != 0) {
+            throw std::runtime_error("Watterson processing failed");
+        }
+
+        std::vector<py::ssize_t> shape = {static_cast<py::ssize_t>(N)};
+        std::vector<py::ssize_t> strides = {static_cast<py::ssize_t>(sizeof(std::complex<float>))};
+        py::array_t<std::complex<float>> result(shape, strides);
+        auto result_ptr = static_cast<std::complex<float>*>(result.request().ptr);
+        for (int i = 0; i < N; i++) {
+            result_ptr[i] = std::complex<float>(out_real[i], out_imag[i]);
+        }
+        return result;
+    }
+
+    void reset() {
+        if (use_gpu_) { reset_watterson_gpu(state_); }
+        else { reset_watterson_cpu(state_); }
+    }
+
+    bool is_using_gpu() const { return use_gpu_; }
+
+private:
+    float sample_rate_;
+    int max_taps_;
+    int max_delay_;
+    int max_samples_;
+    bool use_gpu_;
+    void* state_;
+};
+
+/**
+ * AGC processor wrapper class.
+ */
+class AGCProcessor {
+public:
+    AGCProcessor(
+        float sample_rate,
+        float attack_time_ms = 50.0f,
+        float release_time_ms = 500.0f,
+        float hold_time_ms = 50.0f,
+        bool hang_agc = true,
+        float target_level_db = -10.0f,
+        float max_gain_db = 60.0f,
+        float min_gain_db = -20.0f,
+        float soft_knee_db = 6.0f,
+        int max_samples = 4096
+    ) : use_gpu_(false), state_(nullptr)
+    {
+        state_ = init_agc_gpu(sample_rate, attack_time_ms, release_time_ms,
+                              hold_time_ms, hang_agc, target_level_db,
+                              max_gain_db, min_gain_db, soft_knee_db, max_samples);
+        if (state_) {
+            use_gpu_ = true;
+        } else {
+            state_ = init_agc_cpu(sample_rate, attack_time_ms, release_time_ms,
+                                  hold_time_ms, hang_agc, target_level_db,
+                                  max_gain_db, min_gain_db, soft_knee_db, max_samples);
+            if (!state_) {
+                throw std::runtime_error("Failed to initialize AGC processor");
+            }
+        }
+    }
+
+    ~AGCProcessor() {
+        if (state_) {
+            if (use_gpu_) { free_agc_gpu(state_); }
+            else { free_agc_cpu(state_); }
+        }
+    }
+
+    py::array_t<std::complex<float>> process(py::array_t<std::complex<float>> input) {
+        py::buffer_info buf = input.request();
+        int N = buf.size;
+        std::complex<float>* input_ptr = static_cast<std::complex<float>*>(buf.ptr);
+
+        std::vector<float> in_real(N), in_imag(N);
+        for (int i = 0; i < N; i++) {
+            in_real[i] = input_ptr[i].real();
+            in_imag[i] = input_ptr[i].imag();
+        }
+
+        std::vector<float> out_real(N), out_imag(N);
+
+        int ret;
+        if (use_gpu_) {
+            ret = process_agc_gpu(state_, in_real.data(), in_imag.data(), N,
+                                  out_real.data(), out_imag.data());
+        } else {
+            ret = process_agc_cpu(state_, in_real.data(), in_imag.data(), N,
+                                  out_real.data(), out_imag.data());
+        }
+        if (ret != 0) {
+            throw std::runtime_error("AGC processing failed");
+        }
+
+        std::vector<py::ssize_t> shape = {static_cast<py::ssize_t>(N)};
+        std::vector<py::ssize_t> strides = {static_cast<py::ssize_t>(sizeof(std::complex<float>))};
+        py::array_t<std::complex<float>> result(shape, strides);
+        auto result_ptr = static_cast<std::complex<float>*>(result.request().ptr);
+        for (int i = 0; i < N; i++) {
+            result_ptr[i] = std::complex<float>(out_real[i], out_imag[i]);
+        }
+        return result;
+    }
+
+    float get_gain_db() {
+        if (use_gpu_) { return get_agc_gain_db(state_); }
+        else { return get_agc_gain_db_cpu(state_); }
+    }
+
+    void reset() {
+        if (use_gpu_) { reset_agc_gpu(state_); }
+        else { reset_agc_cpu(state_); }
+    }
+
+    bool is_using_gpu() const { return use_gpu_; }
+
+private:
+    bool use_gpu_;
+    void* state_;
+};
+
+/**
+ * Limiter processor wrapper class.
+ */
+class LimiterProcessor {
+public:
+    LimiterProcessor(float threshold_db = -3.0f, int mode = 1, int max_samples = 4096)
+        : use_gpu_(false), state_(nullptr)
+    {
+        state_ = init_limiter_gpu(threshold_db, mode, max_samples);
+        if (state_) {
+            use_gpu_ = true;
+        } else {
+            state_ = init_limiter_cpu(threshold_db, mode, max_samples);
+            if (!state_) {
+                throw std::runtime_error("Failed to initialize Limiter processor");
+            }
+        }
+    }
+
+    ~LimiterProcessor() {
+        if (state_) {
+            if (use_gpu_) { free_limiter_gpu(state_); }
+            else { free_limiter_cpu(state_); }
+        }
+    }
+
+    py::array_t<std::complex<float>> process(py::array_t<std::complex<float>> input) {
+        py::buffer_info buf = input.request();
+        int N = buf.size;
+        std::complex<float>* input_ptr = static_cast<std::complex<float>*>(buf.ptr);
+
+        std::vector<float> in_real(N), in_imag(N);
+        for (int i = 0; i < N; i++) {
+            in_real[i] = input_ptr[i].real();
+            in_imag[i] = input_ptr[i].imag();
+        }
+
+        std::vector<float> out_real(N), out_imag(N);
+
+        int ret;
+        if (use_gpu_) {
+            ret = process_limiter_gpu(state_, in_real.data(), in_imag.data(), N,
+                                      out_real.data(), out_imag.data());
+        } else {
+            ret = process_limiter_cpu(state_, in_real.data(), in_imag.data(), N,
+                                      out_real.data(), out_imag.data());
+        }
+        if (ret != 0) {
+            throw std::runtime_error("Limiter processing failed");
+        }
+
+        std::vector<py::ssize_t> shape = {static_cast<py::ssize_t>(N)};
+        std::vector<py::ssize_t> strides = {static_cast<py::ssize_t>(sizeof(std::complex<float>))};
+        py::array_t<std::complex<float>> result(shape, strides);
+        auto result_ptr = static_cast<std::complex<float>*>(result.request().ptr);
+        for (int i = 0; i < N; i++) {
+            result_ptr[i] = std::complex<float>(out_real[i], out_imag[i]);
+        }
+        return result;
+    }
+
+    void set_params(float threshold_db, int mode) {
+        if (use_gpu_) { set_limiter_params_gpu(state_, threshold_db, mode); }
+        else { set_limiter_params_cpu(state_, threshold_db, mode); }
+    }
+
+    bool is_using_gpu() const { return use_gpu_; }
+
+private:
+    bool use_gpu_;
+    void* state_;
+};
+
+/**
+ * Noise generator wrapper class.
+ */
+class NoiseGenerator {
+public:
+    NoiseGenerator(float sample_rate, int max_samples = 4096, unsigned long seed = 42)
+        : max_samples_(max_samples), use_gpu_(false), state_(nullptr)
+    {
+        state_ = init_noise_gen_gpu(sample_rate, max_samples, seed);
+        if (state_) {
+            use_gpu_ = true;
+        } else {
+            state_ = init_noise_gen_cpu(sample_rate, max_samples, seed);
+            if (!state_) {
+                throw std::runtime_error("Failed to initialize Noise generator");
+            }
+        }
+    }
+
+    ~NoiseGenerator() {
+        if (state_) {
+            if (use_gpu_) { free_noise_gen_gpu(state_); }
+            else { free_noise_gen_cpu(state_); }
+        }
+    }
+
+    py::array_t<std::complex<float>> generate_awgn(float noise_power, int n_samples) {
+        std::vector<float> noise_real(n_samples), noise_imag(n_samples);
+        int ret;
+        if (use_gpu_) {
+            ret = generate_awgn_gpu(state_, noise_power, n_samples,
+                                    noise_real.data(), noise_imag.data());
+        } else {
+            ret = generate_awgn_cpu(state_, noise_power, n_samples,
+                                    noise_real.data(), noise_imag.data());
+        }
+        if (ret != 0) { throw std::runtime_error("AWGN generation failed"); }
+
+        std::vector<py::ssize_t> shape = {static_cast<py::ssize_t>(n_samples)};
+        std::vector<py::ssize_t> strides = {static_cast<py::ssize_t>(sizeof(std::complex<float>))};
+        py::array_t<std::complex<float>> result(shape, strides);
+        auto result_ptr = static_cast<std::complex<float>*>(result.request().ptr);
+        for (int i = 0; i < n_samples; i++) {
+            result_ptr[i] = std::complex<float>(noise_real[i], noise_imag[i]);
+        }
+        return result;
+    }
+
+    py::array_t<std::complex<float>> generate_atmospheric(float noise_power, float vd, int n_samples) {
+        std::vector<float> noise_real(n_samples), noise_imag(n_samples);
+        int ret;
+        if (use_gpu_) {
+            ret = generate_atmospheric_gpu(state_, noise_power, vd, n_samples,
+                                           noise_real.data(), noise_imag.data());
+        } else {
+            ret = generate_atmospheric_cpu(state_, noise_power, vd, n_samples,
+                                           noise_real.data(), noise_imag.data());
+        }
+        if (ret != 0) { throw std::runtime_error("Atmospheric noise generation failed"); }
+
+        std::vector<py::ssize_t> shape = {static_cast<py::ssize_t>(n_samples)};
+        std::vector<py::ssize_t> strides = {static_cast<py::ssize_t>(sizeof(std::complex<float>))};
+        py::array_t<std::complex<float>> result(shape, strides);
+        auto result_ptr = static_cast<std::complex<float>*>(result.request().ptr);
+        for (int i = 0; i < n_samples; i++) {
+            result_ptr[i] = std::complex<float>(noise_real[i], noise_imag[i]);
+        }
+        return result;
+    }
+
+    py::array_t<std::complex<float>> generate_impulse(float impulse_rate, float impulse_amplitude,
+                                                      float noise_floor, int n_samples) {
+        std::vector<float> noise_real(n_samples), noise_imag(n_samples);
+        int ret;
+        if (use_gpu_) {
+            ret = generate_impulse_gpu(state_, impulse_rate, impulse_amplitude, noise_floor,
+                                       n_samples, noise_real.data(), noise_imag.data());
+        } else {
+            ret = generate_impulse_cpu(state_, impulse_rate, impulse_amplitude, noise_floor,
+                                       n_samples, noise_real.data(), noise_imag.data());
+        }
+        if (ret != 0) { throw std::runtime_error("Impulse noise generation failed"); }
+
+        std::vector<py::ssize_t> shape = {static_cast<py::ssize_t>(n_samples)};
+        std::vector<py::ssize_t> strides = {static_cast<py::ssize_t>(sizeof(std::complex<float>))};
+        py::array_t<std::complex<float>> result(shape, strides);
+        auto result_ptr = static_cast<std::complex<float>*>(result.request().ptr);
+        for (int i = 0; i < n_samples; i++) {
+            result_ptr[i] = std::complex<float>(noise_real[i], noise_imag[i]);
+        }
+        return result;
+    }
+
+    void reset(unsigned long seed) {
+        if (use_gpu_) { reset_noise_gen_gpu(state_, seed); }
+        else { reset_noise_gen_cpu(state_, seed); }
+    }
+
+    bool is_using_gpu() const { return use_gpu_; }
+
+private:
+    int max_samples_;
+    bool use_gpu_;
+    void* state_;
+};
+
+/**
  * Compute power spectrum.
  */
 py::array_t<float> compute_spectrum(
     py::array_t<std::complex<float>> signal,
     float reference = 1.0f
 ) {
-    py::buffer_info buf = signal.request();
-    int N = buf.size;
-    std::complex<float>* sig_ptr = static_cast<std::complex<float>*>(buf.ptr);
+    py::buffer_info input_buf = signal.request();
+    int N = input_buf.size;
+    std::complex<float>* sig_ptr = static_cast<std::complex<float>*>(input_buf.ptr);
 
     std::vector<float> sig_real(N), sig_imag(N);
     for (int i = 0; i < N; i++) {
@@ -617,18 +1109,27 @@ py::array_t<float> compute_spectrum(
         sig_imag[i] = sig_ptr[i].imag();
     }
 
-    py::array_t<float> result(N);
-    py::buffer_info result_buf = result.request();
-    float* result_ptr = static_cast<float*>(result_buf.ptr);
+    // Allocate our own result buffer
+    std::vector<float> result_data(N);
 
     int ret = compute_spectrum_gpu(
         sig_real.data(), sig_imag.data(), N,
-        result_ptr, reference
+        result_data.data(), reference
     );
 
     if (ret != 0) {
         throw std::runtime_error("Spectrum computation failed");
     }
+
+    // Create numpy array with proper shape and strides
+    std::vector<ssize_t> shape = {static_cast<ssize_t>(N)};
+    std::vector<ssize_t> strides = {static_cast<ssize_t>(sizeof(float))};
+    py::array_t<float> result(shape, strides);
+
+    // Get writable buffer and copy data
+    py::buffer_info result_buf = result.request(true);
+    float* result_ptr = static_cast<float*>(result_buf.ptr);
+    memcpy(result_ptr, result_data.data(), N * sizeof(float));
 
     return result;
 }
@@ -847,4 +1348,95 @@ PYBIND11_MODULE(_hfpathsim_gpu, m) {
             result["output"] = powers[6];
             return result;
         }, "Debug: report power at each stage of RF chain");
+
+    // Watterson channel processor (auto-selects GPU/CPU)
+    py::class_<WattersonProcessor>(m, "WattersonProcessor")
+        .def(py::init<float, int, int, int, unsigned long>(),
+             py::arg("sample_rate"),
+             py::arg("max_taps") = 16,
+             py::arg("max_delay_samples") = 1024,
+             py::arg("max_samples") = 4096,
+             py::arg("seed") = 42,
+             "Initialize Watterson channel processor")
+        .def("configure_taps", &WattersonProcessor::configure_taps,
+             py::arg("delays"),
+             py::arg("amplitudes"),
+             py::arg("doppler_spreads"),
+             py::arg("spectrum_types"),
+             py::arg("is_rician"),
+             py::arg("k_factors"),
+             py::arg("update_rate"),
+             "Configure TDL taps with Doppler spectrum parameters")
+        .def("process", &WattersonProcessor::process,
+             py::arg("input"),
+             "Process samples through Watterson channel")
+        .def("reset", &WattersonProcessor::reset,
+             "Reset channel state")
+        .def("is_using_gpu", &WattersonProcessor::is_using_gpu);
+
+    // AGC processor (auto-selects GPU/CPU)
+    py::class_<AGCProcessor>(m, "AGCProcessor")
+        .def(py::init<float, float, float, float, bool, float, float, float, float, int>(),
+             py::arg("sample_rate"),
+             py::arg("attack_time_ms") = 50.0f,
+             py::arg("release_time_ms") = 500.0f,
+             py::arg("hold_time_ms") = 50.0f,
+             py::arg("hang_agc") = true,
+             py::arg("target_level_db") = -10.0f,
+             py::arg("max_gain_db") = 60.0f,
+             py::arg("min_gain_db") = -20.0f,
+             py::arg("soft_knee_db") = 6.0f,
+             py::arg("max_samples") = 4096,
+             "Initialize AGC processor")
+        .def("process", &AGCProcessor::process,
+             py::arg("input"),
+             "Process samples through AGC")
+        .def("get_gain_db", &AGCProcessor::get_gain_db,
+             "Get current gain in dB")
+        .def("reset", &AGCProcessor::reset,
+             "Reset AGC state")
+        .def("is_using_gpu", &AGCProcessor::is_using_gpu);
+
+    // Limiter processor (auto-selects GPU/CPU)
+    py::class_<LimiterProcessor>(m, "LimiterProcessor")
+        .def(py::init<float, int, int>(),
+             py::arg("threshold_db") = -3.0f,
+             py::arg("mode") = 1,  // 0=hard, 1=soft, 2=cubic
+             py::arg("max_samples") = 4096,
+             "Initialize limiter (mode: 0=hard, 1=soft/tanh, 2=cubic)")
+        .def("process", &LimiterProcessor::process,
+             py::arg("input"),
+             "Process samples through limiter")
+        .def("set_params", &LimiterProcessor::set_params,
+             py::arg("threshold_db"),
+             py::arg("mode"),
+             "Update limiter parameters")
+        .def("is_using_gpu", &LimiterProcessor::is_using_gpu);
+
+    // Noise generator (auto-selects GPU/CPU)
+    py::class_<NoiseGenerator>(m, "NoiseGenerator")
+        .def(py::init<float, int, unsigned long>(),
+             py::arg("sample_rate"),
+             py::arg("max_samples") = 4096,
+             py::arg("seed") = 42,
+             "Initialize noise generator")
+        .def("generate_awgn", &NoiseGenerator::generate_awgn,
+             py::arg("noise_power"),
+             py::arg("n_samples"),
+             "Generate AWGN samples with specified power")
+        .def("generate_atmospheric", &NoiseGenerator::generate_atmospheric,
+             py::arg("noise_power"),
+             py::arg("vd"),
+             py::arg("n_samples"),
+             "Generate atmospheric noise (vd=0 Gaussian, vd=1 very impulsive)")
+        .def("generate_impulse", &NoiseGenerator::generate_impulse,
+             py::arg("impulse_rate"),
+             py::arg("impulse_amplitude"),
+             py::arg("noise_floor"),
+             py::arg("n_samples"),
+             "Generate impulse noise with specified parameters")
+        .def("reset", &NoiseGenerator::reset,
+             py::arg("seed"),
+             "Reset RNG with new seed")
+        .def("is_using_gpu", &NoiseGenerator::is_using_gpu);
 }

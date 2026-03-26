@@ -42,11 +42,17 @@ set(CUDA_SOURCES
     kernels/fading.cu
     kernels/signal_proc.cu
     kernels/vh_rf_chain.cu
+    kernels/watterson.cu
+    kernels/agc.cu
+    kernels/noise.cu
 )
 
 # CPU fallback sources (compiled with OpenMP)
 set(CPU_SOURCES
     kernels/vh_rf_chain_cpu.cpp
+    kernels/watterson_cpu.cpp
+    kernels/agc_cpu.cpp
+    kernels/noise_cpu.cpp
 )
 
 # Find OpenMP for CPU fallback

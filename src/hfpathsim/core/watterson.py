@@ -3,6 +3,9 @@
 The Watterson model is a tapped delay line (TDL) model where each tap
 represents a propagation mode with independent Rayleigh or Rician fading.
 
+Uses CUDA/C++ compiled implementations when available with automatic
+fallback to pure Python.
+
 Reference: Watterson, C.C., Juroshek, J.R., and Bensema, W.D.,
 "Experimental confirmation of an HF channel model," IEEE Trans.
 Comm. Tech., vol. COM-18, pp. 792-803, Dec. 1970.
@@ -15,6 +18,14 @@ import numpy as np
 from scipy import signal
 
 from .parameters import ITUCondition
+
+# Try to import compiled GPU implementations
+try:
+    from ..gpu import WattersonProcessor as _WattersonProcessor
+    _HAS_COMPILED = _WattersonProcessor is not None
+except ImportError:
+    _HAS_COMPILED = False
+    _WattersonProcessor = None
 
 
 class DopplerSpectrum(Enum):
@@ -164,18 +175,24 @@ class WattersonChannel:
     - Independent Rayleigh/Rician fading per tap
     - Gaussian Doppler spectrum (default)
     - Real-time fading coefficient generation
+
+    Uses CUDA/C++ implementation when available for high performance.
     """
 
     def __init__(
         self,
         config: Optional[WattersonConfig] = None,
         seed: Optional[int] = None,
+        use_compiled: bool = True,
+        max_samples: int = 65536,
     ):
         """Initialize Watterson channel.
 
         Args:
             config: Channel configuration
             seed: Random seed for reproducibility
+            use_compiled: Use compiled CUDA/C++ implementation if available
+            max_samples: Maximum samples per block (for compiled backend)
         """
         self.config = config or WattersonConfig.from_itu_condition(
             ITUCondition.MODERATE
@@ -183,6 +200,7 @@ class WattersonChannel:
 
         # Random state
         self._rng = np.random.default_rng(seed)
+        self._seed = seed if seed is not None else 42
 
         # Fading state for each tap
         self._tap_states: List[dict] = []
@@ -194,6 +212,76 @@ class WattersonChannel:
 
         # Callbacks
         self._state_callbacks: List[Callable] = []
+
+        # Try to use compiled implementation
+        # C++ signature: (sample_rate, max_taps, max_delay_samples, max_samples, seed)
+        self._compiled_processor = None
+        self._max_samples = max_samples
+        if use_compiled and _HAS_COMPILED and len(self.config.taps) > 0:
+            try:
+                # Calculate max delay in samples
+                max_delay_ms = max(tap.delay_ms for tap in self.config.taps)
+                max_delay_samples = int(max_delay_ms / 1000.0 * self.config.sample_rate_hz) + 1024
+
+                self._compiled_processor = _WattersonProcessor(
+                    self.config.sample_rate_hz,
+                    len(self.config.taps),
+                    max_delay_samples,
+                    max_samples,
+                    self._seed,
+                )
+                # Configure taps
+                self._configure_compiled_taps()
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._compiled_processor = None
+
+    def _configure_compiled_taps(self):
+        """Configure taps in the compiled processor."""
+        if self._compiled_processor is None:
+            return
+
+        n_taps = len(self.config.taps)
+
+        # Build arrays for all taps
+        delays = np.zeros(n_taps, dtype=np.int32)
+        amplitudes = np.zeros(n_taps, dtype=np.float32)
+        doppler_spreads = np.zeros(n_taps, dtype=np.float32)
+        spectrum_types = np.zeros(n_taps, dtype=np.int32)
+        is_rician = np.zeros(n_taps, dtype=np.int32)
+        k_factors = np.zeros(n_taps, dtype=np.float32)
+
+        # Map DopplerSpectrum enum to int: GAUSSIAN=0, FLAT=1, JAKES=2
+        spectrum_map = {
+            DopplerSpectrum.GAUSSIAN: 0,
+            DopplerSpectrum.FLAT: 1,
+            DopplerSpectrum.JAKES: 2,
+        }
+
+        for i, tap in enumerate(self.config.taps):
+            # Convert delay from ms to samples
+            delays[i] = int(tap.delay_ms / 1000.0 * self.config.sample_rate_hz)
+            amplitudes[i] = tap.amplitude
+            doppler_spreads[i] = tap.doppler_spread_hz
+            spectrum_types[i] = spectrum_map.get(tap.doppler_spectrum, 0)
+            is_rician[i] = 1 if tap.is_specular else 0
+            k_factors[i] = tap.k_factor_db
+
+        try:
+            self._compiled_processor.configure_taps(
+                delays,
+                amplitudes,
+                doppler_spreads,
+                spectrum_types,
+                is_rician,
+                k_factors,
+                self.config.update_rate_hz,
+            )
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._compiled_processor = None
 
     def _init_tap_states(self):
         """Initialize fading generators for each tap."""
@@ -360,6 +448,25 @@ class WattersonChannel:
         Returns:
             Complex output samples after channel
         """
+        # Use compiled implementation if available
+        if self._compiled_processor is not None:
+            try:
+                input_real = np.ascontiguousarray(input_samples.real, dtype=np.float32)
+                input_imag = np.ascontiguousarray(input_samples.imag, dtype=np.float32)
+                output_real, output_imag = self._compiled_processor.process(
+                    input_real, input_imag
+                )
+                n_samples = len(input_samples)
+                self._sample_count += n_samples
+                self._time += n_samples / self.config.sample_rate_hz
+                # Notify callbacks
+                for callback in self._state_callbacks:
+                    callback(self.get_state())
+                return (output_real + 1j * output_imag).astype(np.complex64)
+            except Exception:
+                pass  # Fall through to Python implementation
+
+        # Python fallback implementation
         n_samples = len(input_samples)
         output = np.zeros(n_samples, dtype=np.complex128)
 
@@ -408,6 +515,22 @@ class WattersonChannel:
         Returns:
             Complex output samples
         """
+        # Use compiled implementation if available
+        if self._compiled_processor is not None:
+            try:
+                input_real = np.ascontiguousarray(input_samples.real, dtype=np.float32)
+                input_imag = np.ascontiguousarray(input_samples.imag, dtype=np.float32)
+                output_real, output_imag = self._compiled_processor.process(
+                    input_real, input_imag
+                )
+                n_samples = len(input_samples)
+                self._sample_count += n_samples
+                self._time += n_samples / self.config.sample_rate_hz
+                return (output_real + 1j * output_imag).astype(np.complex64)
+            except Exception:
+                pass  # Fall through to Python implementation
+
+        # Python fallback implementation
         n_samples = len(input_samples)
         output = np.zeros(n_samples, dtype=np.complex128)
 
@@ -514,10 +637,19 @@ class WattersonChannel:
         """
         if seed is not None:
             self._rng = np.random.default_rng(seed)
+            self._seed = seed
 
         self._init_tap_states()
         self._time = 0.0
         self._sample_count = 0
+
+        # Reset compiled processor if available
+        if self._compiled_processor is not None:
+            try:
+                self._compiled_processor.reset(self._seed)
+                self._configure_compiled_taps()
+            except Exception:
+                pass
 
     def add_state_callback(self, callback: Callable):
         """Register callback for state updates."""

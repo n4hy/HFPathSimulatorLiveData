@@ -5,12 +5,24 @@ Implements receiver front-end effects:
 - Signal limiting/clipping
 - Nonlinear distortion
 - Frequency offset and phase noise
+
+Uses CUDA/C++ compiled implementations when available with automatic
+fallback to pure Python.
 """
 
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, Tuple
 import numpy as np
+
+# Try to import compiled GPU implementations
+try:
+    from ..gpu import AGCProcessor as _AGCProcessor, LimiterProcessor as _LimiterProcessor
+    _HAS_COMPILED = _AGCProcessor is not None and _LimiterProcessor is not None
+except ImportError:
+    _HAS_COMPILED = False
+    _AGCProcessor = None
+    _LimiterProcessor = None
 
 
 class AGCMode(Enum):
@@ -65,18 +77,24 @@ class AGC:
     - Attack/release time constants
     - Hang AGC for reduced pumping
     - Configurable gain range
+
+    Uses CUDA/C++ implementation when available for high performance.
     """
 
     def __init__(
         self,
         config: Optional[AGCConfig] = None,
         sample_rate_hz: float = 2_000_000,
+        use_compiled: bool = True,
+        max_samples: int = 65536,
     ):
         """Initialize AGC.
 
         Args:
             config: AGC configuration
             sample_rate_hz: Sample rate
+            use_compiled: Use compiled CUDA/C++ implementation if available
+            max_samples: Maximum samples per block (for compiled backend)
         """
         self.config = config or AGCConfig()
         self.sample_rate = sample_rate_hz
@@ -87,7 +105,31 @@ class AGC:
         self._hold_counter = 0  # Hold timer
         self._peak_envelope = 0.0  # Peak for hang AGC
 
-        # Pre-compute coefficients
+        # Try to use compiled implementation
+        # C++ signature: (sample_rate, attack_time_ms, release_time_ms, hold_time_ms,
+        #                 hang_agc, target_level_db, max_gain_db, min_gain_db,
+        #                 soft_knee_db, max_samples)
+        self._compiled_processor = None
+        if use_compiled and _HAS_COMPILED:
+            try:
+                self._compiled_processor = _AGCProcessor(
+                    sample_rate_hz,
+                    self.config.attack_time_ms,
+                    self.config.release_time_ms,
+                    self.config.hold_time_ms,
+                    self.config.hang_agc,
+                    self.config.target_level_db,
+                    self.config.max_gain_db,
+                    self.config.min_gain_db,
+                    self.config.soft_knee_db,
+                    max_samples,
+                )
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._compiled_processor = None
+
+        # Pre-compute coefficients for Python fallback
         self._update_coefficients()
 
     def _update_coefficients(self):
@@ -118,6 +160,19 @@ class AGC:
         if self.config.mode == AGCMode.MANUAL:
             return signal * (10 ** (self._gain_db / 20))
 
+        # Use compiled implementation if available
+        if self._compiled_processor is not None:
+            try:
+                input_real = np.ascontiguousarray(signal.real, dtype=np.float32)
+                input_imag = np.ascontiguousarray(signal.imag, dtype=np.float32)
+                output_real, output_imag = self._compiled_processor.process(
+                    input_real, input_imag
+                )
+                return (output_real + 1j * output_imag).astype(np.complex64)
+            except Exception:
+                pass  # Fall through to Python implementation
+
+        # Python fallback implementation
         n_samples = len(signal)
         output = np.zeros(n_samples, dtype=np.complex64)
         envelope = np.abs(signal)
@@ -181,6 +236,19 @@ class AGC:
         if self.config.mode == AGCMode.MANUAL:
             return signal * (10 ** (self._gain_db / 20))
 
+        # Use compiled implementation if available (per-sample processing)
+        if self._compiled_processor is not None:
+            try:
+                input_real = np.ascontiguousarray(signal.real, dtype=np.float32)
+                input_imag = np.ascontiguousarray(signal.imag, dtype=np.float32)
+                output_real, output_imag = self._compiled_processor.process(
+                    input_real, input_imag
+                )
+                return (output_real + 1j * output_imag).astype(np.complex64)
+            except Exception:
+                pass  # Fall through to Python implementation
+
+        # Python fallback - block-average implementation
         # Block envelope
         envelope = np.mean(np.abs(signal))
 
@@ -219,6 +287,11 @@ class AGC:
         self._envelope = 0.0
         self._hold_counter = 0
         self._peak_envelope = 0.0
+        if self._compiled_processor is not None:
+            try:
+                self._compiled_processor.reset()
+            except Exception:
+                pass
 
     @property
     def current_gain_db(self) -> float:
@@ -256,24 +329,49 @@ class Limiter:
     - Hard clipping
     - Soft limiting (tanh-like)
     - Cubic soft clipping
+
+    Uses CUDA/C++ implementation when available for high performance.
     """
 
     def __init__(
         self,
         config: Optional[LimiterConfig] = None,
         sample_rate_hz: float = 2_000_000,
+        use_compiled: bool = True,
+        max_samples: int = 65536,
     ):
         """Initialize limiter.
 
         Args:
             config: Limiter configuration
             sample_rate_hz: Sample rate
+            use_compiled: Use compiled CUDA/C++ implementation if available
+            max_samples: Maximum samples per block (for compiled backend)
         """
         self.config = config or LimiterConfig()
         self.sample_rate = sample_rate_hz
 
         self._threshold = 10 ** (self.config.threshold_db / 20)
         self._gain_reduction = 0.0
+
+        # Map mode string to integer for compiled backend
+        mode_map = {"hard": 0, "soft": 1, "cubic": 2}
+        mode_int = mode_map.get(self.config.mode, 1)
+
+        # Try to use compiled implementation
+        # C++ signature: (threshold_db, mode, max_samples)
+        self._compiled_processor = None
+        if use_compiled and _HAS_COMPILED:
+            try:
+                self._compiled_processor = _LimiterProcessor(
+                    self.config.threshold_db,
+                    mode_int,
+                    max_samples,
+                )
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._compiled_processor = None
 
     def process(self, signal: np.ndarray) -> np.ndarray:
         """Apply limiting to signal.
@@ -284,6 +382,30 @@ class Limiter:
         Returns:
             Limited signal
         """
+        # Use compiled implementation if available
+        if self._compiled_processor is not None:
+            try:
+                input_real = np.ascontiguousarray(signal.real, dtype=np.float32)
+                input_imag = np.ascontiguousarray(signal.imag, dtype=np.float32)
+                output_real, output_imag = self._compiled_processor.process(
+                    input_real, input_imag
+                )
+                output = (output_real + 1j * output_imag).astype(np.complex64)
+                # Compute gain reduction for monitoring
+                envelope = np.abs(signal)
+                limited_env = np.abs(output)
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    gr = np.where(
+                        envelope > 0,
+                        20 * np.log10(limited_env / envelope),
+                        0,
+                    )
+                    self._gain_reduction = np.min(gr)
+                return output
+            except Exception:
+                pass  # Fall through to Python implementation
+
+        # Python fallback implementation
         envelope = np.abs(signal)
         phase = np.angle(signal)
 

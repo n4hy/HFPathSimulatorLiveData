@@ -551,11 +551,12 @@ int compute_spectrum_gpu(
     // Allocate GPU memory
     cufftComplex* signal_dev;
     float* power_dev;
-    float* db_dev;
 
-    cudaMalloc(&signal_dev, N * sizeof(cufftComplex));
-    cudaMalloc(&power_dev, N * sizeof(float));
-    cudaMalloc(&db_dev, N * sizeof(float));
+    cudaError_t err;
+    err = cudaMalloc(&signal_dev, N * sizeof(cufftComplex));
+    if (err != cudaSuccess) return -1;
+    err = cudaMalloc(&power_dev, N * sizeof(float));
+    if (err != cudaSuccess) { cudaFree(signal_dev); return -2; }
 
     // Pack and copy signal
     cufftComplex* signal_temp = new cufftComplex[N];
@@ -568,24 +569,55 @@ int compute_spectrum_gpu(
 
     // Create FFT plan and execute
     cufftHandle plan;
-    cufftPlan1d(&plan, N, CUFFT_C2C, 1);
-    cufftExecC2C(plan, signal_dev, signal_dev, CUFFT_FORWARD);
+    cufftResult fft_result;
+    fft_result = cufftPlan1d(&plan, N, CUFFT_C2C, 1);
+    if (fft_result != CUFFT_SUCCESS) {
+        cudaFree(signal_dev); cudaFree(power_dev);
+        return -4;
+    }
+    fft_result = cufftExecC2C(plan, signal_dev, signal_dev, CUFFT_FORWARD);
+    if (fft_result != CUFFT_SUCCESS) {
+        cufftDestroy(plan);
+        cudaFree(signal_dev); cudaFree(power_dev);
+        return -5;
+    }
+
+    // Synchronize after FFT
+    cudaDeviceSynchronize();
 
     // Compute power spectrum
     int threads = 256;
     int blocks = (N + threads - 1) / threads;
 
     compute_power_spectrum<<<blocks, threads>>>(signal_dev, power_dev, N);
-    power_to_db<<<blocks, threads>>>(power_dev, db_dev, reference, -120.0f, N);
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        cufftDestroy(plan);
+        cudaFree(signal_dev); cudaFree(power_dev);
+        return -6;
+    }
+    cudaDeviceSynchronize();
 
-    // Copy result
-    cudaMemcpy(power_db, db_dev, N * sizeof(float), cudaMemcpyDeviceToHost);
+    // Copy power to CPU and convert to dB
+    float* power_host = new float[N];
+    cudaMemcpy(power_host, power_dev, N * sizeof(float), cudaMemcpyDeviceToHost);
+
+    for (int i = 0; i < N; i++) {
+        float p = power_host[i] / reference;
+        if (p > 0.0f) {
+            power_db[i] = 10.0f * log10f(p);
+            if (power_db[i] < -120.0f) power_db[i] = -120.0f;
+        } else {
+            power_db[i] = -120.0f;
+        }
+    }
+
+    delete[] power_host;
 
     // Cleanup
     cufftDestroy(plan);
     cudaFree(signal_dev);
     cudaFree(power_dev);
-    cudaFree(db_dev);
 
     return 0;
 }

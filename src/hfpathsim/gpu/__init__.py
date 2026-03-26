@@ -29,11 +29,19 @@ try:
     from . import _hfpathsim_gpu
 
     _gpu_module = _hfpathsim_gpu
-    # Export VH RF Chain processor class
+    # Export processor classes (auto-select GPU/CPU)
     VHRFChainProcessor = _hfpathsim_gpu.VHRFChainProcessor
+    WattersonProcessor = _hfpathsim_gpu.WattersonProcessor
+    AGCProcessor = _hfpathsim_gpu.AGCProcessor
+    LimiterProcessor = _hfpathsim_gpu.LimiterProcessor
+    NoiseGenerator = _hfpathsim_gpu.NoiseGenerator
 except ImportError:
     _gpu_module = None
     VHRFChainProcessor = None
+    WattersonProcessor = None
+    AGCProcessor = None
+    LimiterProcessor = None
+    NoiseGenerator = None
 
 # Fall back to CuPy
 if _gpu_module is None:
