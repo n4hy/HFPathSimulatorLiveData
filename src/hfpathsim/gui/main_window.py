@@ -563,7 +563,7 @@ class MainWindow(QMainWindow):
 
         # Record snapshot if recording
         if self._recorder and self._recording_panel.is_recording():
-            self._recorder.capture()
+            self._recorder.capture(state.timestamp)
             self._recording_panel.update_snapshot_count(self._recorder.num_snapshots)
 
     def _on_input_changed(self, source: InputSource):
@@ -620,23 +620,31 @@ class MainWindow(QMainWindow):
     def _on_noise_config_changed(self, config: NoiseConfig):
         """Handle noise configuration change."""
         if self._noise_generator:
-            self._noise_generator = NoiseGenerator(config)
+            # Preserve the sample rate when recreating
+            sample_rate = self._noise_generator.sample_rate
+            self._noise_generator = NoiseGenerator(config, sample_rate_hz=sample_rate)
             self._snr_label.setText(f"SNR: {config.snr_db:.1f} dB")
 
     def _on_agc_config_changed(self, config: AGCConfig):
         """Handle AGC configuration change."""
         if self._agc:
-            self._agc = AGC(config)
+            # Preserve the sample rate when recreating
+            sample_rate = self._agc.sample_rate
+            self._agc = AGC(config, sample_rate_hz=sample_rate)
 
     def _on_limiter_config_changed(self, config: LimiterConfig):
         """Handle limiter configuration change."""
         if self._limiter:
-            self._limiter = Limiter(config)
+            # Preserve the sample rate when recreating
+            sample_rate = self._limiter.sample_rate
+            self._limiter = Limiter(config, sample_rate_hz=sample_rate)
 
     def _on_freq_offset_config_changed(self, config: FrequencyOffsetConfig):
         """Handle frequency offset configuration change."""
         if self._freq_offset:
-            self._freq_offset = FrequencyOffset(config)
+            # Preserve the sample rate when recreating
+            sample_rate = self._freq_offset.sample_rate
+            self._freq_offset = FrequencyOffset(config, sample_rate_hz=sample_rate)
 
     def _on_ray_tracing_requested(self, request: dict):
         """Handle ray tracing request."""
@@ -755,12 +763,25 @@ class MainWindow(QMainWindow):
             f"Output: {type(sink).__name__} @ {sink.sample_rate/1e6:.1f} Msps"
         )
 
+        # If output is already enabled, open the new sink immediately
+        if self._output_enabled and not sink.is_open:
+            if sink.open():
+                self._statusbar.showMessage("Output enabled")
+                self._output_config.set_status_message("Streaming")
+            else:
+                self._statusbar.showMessage("Failed to open output sink")
+                self._output_config.set_status_message("Failed to open")
+                self._output_enabled = False
+
     def _on_output_enabled_changed(self, enabled: bool):
         """Handle output enable/disable."""
         self._output_enabled = enabled
 
         if enabled and self._output_sink and not self._output_sink.is_open:
-            if self._output_sink.open():
+            print(f"DEBUG: Attempting to open sink: {type(self._output_sink).__name__}")
+            result = self._output_sink.open()
+            print(f"DEBUG: Sink open() returned: {result}, is_open={self._output_sink.is_open}")
+            if result:
                 self._statusbar.showMessage("Output enabled")
                 self._output_config.set_status_message("Streaming")
             else:
@@ -808,10 +829,104 @@ class MainWindow(QMainWindow):
                 )
                 return
 
+        # Recreate ALL channels and impairments with correct sample rate from input
+        input_rate = self._input_source.sample_rate
+        print(f"=" * 60)
+        print(f"DEBUG _start_processing: Input sample rate = {input_rate}Hz")
+        print(f"DEBUG: Current channel model = {self._current_model}")
+
+        # Reset debug flags so we log again
+        for attr in ['_debug_logged', '_debug_logged2', '_debug_noise', '_debug_agc']:
+            if hasattr(self, attr):
+                delattr(self, attr)
+
+        # Recreate Watterson channel
+        if self._watterson_channel:
+            old_config = self._watterson_channel.config
+            new_config = WattersonConfig(
+                taps=old_config.taps,
+                sample_rate_hz=input_rate,
+                block_size=int(input_rate * 0.05),  # 50ms blocks
+                update_rate_hz=old_config.update_rate_hz,
+            )
+            self._watterson_channel = WattersonChannel(new_config)
+            print(f"DEBUG: Watterson recreated at {input_rate}Hz")
+
+        # Recreate Vogler HFChannel at 1 MHz (RF rate)
+        # Vogler requires MHz-rate processing for valid ionospheric physics
+        # We upsample before Vogler and downsample after in _process_vogler_with_resampling
+        vogler_rate = 1_000_000  # 1 MHz
+        if self._channel:
+            old_params = self._channel.params
+            new_config = ProcessingConfig(
+                sample_rate_hz=vogler_rate,
+                block_size=int(vogler_rate * 0.05),  # 50ms blocks at 1 MHz = 50000 samples
+                overlap=int(vogler_rate * 0.0125),
+            )
+            self._channel = HFChannel(old_params, new_config, use_gpu=self._channel.use_gpu)
+            self._channel.add_state_callback(self._on_channel_state)
+            print(f"DEBUG: Vogler HFChannel at {vogler_rate/1e6:.0f}MHz (input will be resampled)")
+
+        # Recreate impairments with correct sample rate
+        # This is CRITICAL - defaults are 2MHz but input may be 8kHz!
+        print(f"DEBUG: Recreating impairments at {input_rate}Hz sample rate")
+        if self._noise_generator:
+            old_noise_rate = self._noise_generator.sample_rate
+            self._noise_generator = NoiseGenerator(
+                self._noise_generator.config,
+                sample_rate_hz=input_rate,
+            )
+            print(f"DEBUG: NoiseGenerator: {old_noise_rate}Hz -> {input_rate}Hz")
+        if self._agc:
+            old_agc_rate = self._agc.sample_rate
+            self._agc = AGC(
+                self._agc.config,
+                sample_rate_hz=input_rate,
+            )
+            print(f"DEBUG: AGC: {old_agc_rate}Hz -> {input_rate}Hz")
+        if self._limiter:
+            old_limiter_rate = self._limiter.sample_rate
+            self._limiter = Limiter(
+                self._limiter.config,
+                sample_rate_hz=input_rate,
+            )
+            print(f"DEBUG: Limiter: {old_limiter_rate}Hz -> {input_rate}Hz")
+        if self._freq_offset:
+            old_freq_rate = self._freq_offset.sample_rate
+            self._freq_offset = FrequencyOffset(
+                self._freq_offset.config,
+                sample_rate_hz=input_rate,
+            )
+            print(f"DEBUG: FreqOffset: {old_freq_rate}Hz -> {input_rate}Hz")
+        # Warn if using Vogler model with low sample rate
+        if self._current_model == "vogler" and input_rate < 100000:
+            print("=" * 60)
+            print("NOTE: Vogler IPM with multipath Rayleigh fading")
+            print(f"      Modes: {len(self._channel.params.modes)}, "
+                  f"Doppler: {self._channel.params.doppler_spread_hz} Hz, "
+                  f"Delay spread: {self._channel.params.delay_spread_ms} ms")
+            print("=" * 60)
+
+        # Reset block counter for debug output
+        self._block_count = 0
+        print(f"=" * 60)
+
+        # Recreate Vogler-Hoffmeyer channel with correct sample rate
+        if self._vh_channel:
+            old_vh_config = self._vh_channel.config
+            new_vh_config = VoglerHoffmeyerConfig(
+                modes=old_vh_config.modes,
+                sample_rate=input_rate,
+                spread_f_enabled=old_vh_config.spread_f_enabled,
+                random_seed=old_vh_config.random_seed,
+            )
+            self._vh_channel = VoglerHoffmeyerChannel(new_vh_config)
+            self._vh_channel.add_state_callback(self._on_vh_channel_state)
+
         self._running = True
         self._start_btn.setEnabled(False)
         self._stop_btn.setEnabled(True)
-        self._statusbar.showMessage("Processing...")
+        self._statusbar.showMessage(f"Processing at {input_rate/1000:.1f} kHz...")
 
         # Start processing timer (process blocks every 50ms)
         self._process_timer.start(50)
@@ -828,9 +943,315 @@ class MainWindow(QMainWindow):
         self._process_timer.stop()
         self._meter_timer.stop()
 
+        # Clear the audio buffer immediately to stop playback
+        if self._output_sink and hasattr(self._output_sink, 'clear'):
+            self._output_sink.clear()
+
         self._start_btn.setEnabled(True)
         self._stop_btn.setEnabled(False)
         self._statusbar.showMessage("Stopped")
+
+    def _process_vogler_with_resampling(self, samples: np.ndarray) -> np.ndarray:
+        """Process samples through Vogler ionospheric channel model.
+
+        Full RF processing chain:
+        1. Upsample from baseband rate (8 kHz) to RF rate (1 MHz)
+        2. Mix up to RF carrier frequency
+        3. Apply Vogler channel model at RF rate
+        4. Mix back down to baseband
+        5. Lowpass filter
+        6. Downsample back to baseband rate
+
+        Args:
+            samples: Input samples at baseband rate (e.g., 8 kHz)
+
+        Returns:
+            Processed samples with ionospheric fading applied
+        """
+        from scipy import signal as scipy_signal
+
+        if self._channel is None:
+            return samples
+
+        params = self._channel.params
+        input_rate = self._input_source.sample_rate
+        n_samples = len(samples)
+
+        # RF processing parameters
+        rf_rate = 1_000_000  # 1 MHz RF sample rate
+        upsample_factor = int(rf_rate / input_rate)  # 125 for 8kHz -> 1MHz
+        rf_carrier_hz = 100_000  # 100 kHz carrier within the 1 MHz band
+
+        # Initialize RF processing state if needed
+        if not hasattr(self, '_vogler_rf_state'):
+            self._init_vogler_rf_state(input_rate, rf_rate, rf_carrier_hz)
+
+        # === Step 1: Upsample to RF rate ===
+        n_rf_samples = n_samples * upsample_factor
+        rf_samples = scipy_signal.resample(samples, n_rf_samples).astype(np.complex128)
+
+        # === Step 2: Mix up to RF carrier ===
+        state = self._vogler_rf_state
+        t_rf = np.arange(n_rf_samples) / rf_rate + state['rf_time']
+        state['rf_time'] += n_rf_samples / rf_rate
+        rf_signal = rf_samples * np.exp(1j * 2 * np.pi * rf_carrier_hz * t_rf)
+
+        # === Step 3: Apply Vogler channel at RF rate ===
+        # Use the HFChannel.process() method at RF rate
+        rf_processed = self._apply_vogler_rf(rf_signal, rf_rate, params)
+
+        # === Step 4: Mix back down to baseband ===
+        baseband_signal = rf_processed * np.exp(-1j * 2 * np.pi * rf_carrier_hz * t_rf)
+
+        # === Step 5: Lowpass filter (anti-aliasing) ===
+        # Filter bandwidth = input_rate / 2 (Nyquist of original signal)
+        cutoff_normalized = (input_rate / 2) / (rf_rate / 2)  # Normalized to Nyquist
+        filtered = scipy_signal.sosfilt(state['lpf_sos'], baseband_signal)
+
+        # === Step 6: Downsample back to input rate ===
+        output = scipy_signal.resample(filtered, n_samples).astype(np.complex64)
+
+        if not hasattr(self, '_vogler_rf_debug'):
+            self._vogler_rf_debug = True
+            print(f"DEBUG Vogler RF: {input_rate/1000:.0f}kHz -> {rf_rate/1e6:.0f}MHz -> "
+                  f"{input_rate/1000:.0f}kHz, carrier={rf_carrier_hz/1000:.0f}kHz")
+            print(f"DEBUG Vogler RF: in={np.max(np.abs(samples)):.4f}, "
+                  f"rf={np.max(np.abs(rf_processed)):.4f}, "
+                  f"out={np.max(np.abs(output)):.4f}")
+
+        return output
+
+    def _init_vogler_rf_state(self, input_rate: float, rf_rate: float, rf_carrier_hz: float):
+        """Initialize state for RF processing chain."""
+        from scipy import signal as scipy_signal
+
+        # Design lowpass filter for anti-aliasing before downsampling
+        # Cutoff at input_rate/2 (Nyquist of original signal)
+        cutoff_normalized = (input_rate / 2) / (rf_rate / 2)
+        lpf_sos = scipy_signal.butter(8, cutoff_normalized, btype='low', output='sos')
+
+        # State for the Vogler RF channel processing
+        self._vogler_rf_state = {
+            'rf_time': 0.0,  # Running time for mixer phase continuity
+            'lpf_sos': lpf_sos,
+            'rf_rate': rf_rate,
+            'input_rate': input_rate,
+            'rf_carrier_hz': rf_carrier_hz,
+            # Fading state per mode
+            'mode_states': [],
+        }
+
+        # Initialize fading state for each mode
+        if self._channel is not None:
+            params = self._channel.params
+            block_duration = 0.05  # 50ms blocks
+            update_rate = 1.0 / block_duration
+
+            for mode in params.modes:
+                if not mode.enabled:
+                    continue
+
+                # Doppler filter for Rayleigh fading
+                doppler = params.doppler_spread_hz
+                if doppler > 0:
+                    coherence_blocks = update_rate / doppler
+                    filter_len = max(16, min(64, int(coherence_blocks * 2)))
+                else:
+                    filter_len = 16
+
+                # Gaussian Doppler shaping filter
+                t = np.arange(filter_len) - filter_len // 2
+                f_norm = doppler / update_rate if update_rate > 0 else 0.05
+                sigma = max(1.0, 1.0 / (2 * np.pi * f_norm)) if f_norm > 0 else filter_len / 4
+                doppler_filter = np.exp(-0.5 * (t / sigma) ** 2)
+                doppler_filter = doppler_filter / np.sqrt(np.sum(doppler_filter**2))
+
+                # Delay samples at RF rate
+                delay_samples_rf = int(mode.delay_offset_ms / 1000 * rf_rate)
+
+                mode_state = {
+                    'mode': mode,
+                    'doppler_filter': doppler_filter.astype(np.complex128),
+                    'noise_buffer': (np.random.randn(filter_len)
+                        + 1j * np.random.randn(filter_len)) / np.sqrt(2),
+                    'current_gain': complex(mode.relative_amplitude, 0),
+                    'prev_gain': complex(mode.relative_amplitude, 0),
+                    'delay_buffer': np.zeros(max(1, delay_samples_rf), dtype=np.complex128),
+                    'delay_samples': delay_samples_rf,
+                }
+                self._vogler_rf_state['mode_states'].append(mode_state)
+
+            print(f"DEBUG: Vogler RF initialized: {len(self._vogler_rf_state['mode_states'])} modes, "
+                  f"rf_rate={rf_rate/1e6:.0f}MHz")
+
+    def _apply_vogler_rf(self, rf_signal: np.ndarray, rf_rate: float,
+                         params) -> np.ndarray:
+        """Apply Vogler channel effects at RF rate.
+
+        Implements multipath propagation with time-varying Rayleigh fading
+        for each propagation mode.
+        """
+        n_samples = len(rf_signal)
+        output = np.zeros(n_samples, dtype=np.complex128)
+
+        # Update fading coefficients once per block
+        self._update_vogler_rf_fading()
+
+        for state in self._vogler_rf_state['mode_states']:
+            mode = state['mode']
+            fading_gain = state['current_gain']
+            delay_samples = state['delay_samples']
+
+            # Apply delay for this mode
+            if delay_samples == 0:
+                delayed = rf_signal
+            else:
+                buf = state['delay_buffer']
+                buf_len = len(buf)
+                if buf_len >= n_samples:
+                    # Buffer is large enough
+                    extended = np.concatenate([buf[-delay_samples:], rf_signal])
+                    delayed = extended[:n_samples]
+                    # Update buffer: keep last delay_samples from extended
+                    state['delay_buffer'] = extended[-(delay_samples):]
+                else:
+                    # Small delay - simpler handling
+                    extended = np.concatenate([buf, rf_signal])
+                    delayed = extended[:n_samples]
+                    state['delay_buffer'] = rf_signal[-delay_samples:] if delay_samples <= n_samples else \
+                        np.concatenate([state['delay_buffer'][-(delay_samples-n_samples):], rf_signal])
+
+            # Apply fading gain with interpolation for smoothness
+            old_gain = state['prev_gain']
+            t = np.linspace(0, 1, n_samples, dtype=np.float64)
+            interp_gain = old_gain * (1 - t) + fading_gain * t
+            state['prev_gain'] = fading_gain
+
+            output += delayed * interp_gain
+
+        return output
+
+    def _update_vogler_rf_fading(self):
+        """Update Rayleigh fading coefficients for Vogler RF modes."""
+        if not hasattr(self, '_vogler_rf_state'):
+            return
+
+        for state in self._vogler_rf_state['mode_states']:
+            mode = state['mode']
+
+            # Generate new complex Gaussian noise
+            noise = (np.random.randn() + 1j * np.random.randn()) / np.sqrt(2)
+
+            # Shift buffer and filter
+            state['noise_buffer'] = np.roll(state['noise_buffer'], -1)
+            state['noise_buffer'][-1] = noise
+
+            # Convolve with Doppler shaping filter
+            filtered = np.sum(state['noise_buffer'] * state['doppler_filter'])
+
+            # Apply mode amplitude (Rayleigh fading)
+            state['current_gain'] = filtered * mode.relative_amplitude
+
+    def _process_vh_with_resampling(self, samples: np.ndarray) -> np.ndarray:
+        """Process samples through Vogler-Hoffmeyer channel model.
+
+        Full RF processing chain:
+        1. Upsample from baseband rate (8 kHz) to RF rate (1 MHz)
+        2. Mix up to RF carrier frequency
+        3. Apply Vogler-Hoffmeyer channel model at RF rate
+        4. Mix back down to baseband
+        5. Lowpass filter
+        6. Downsample back to baseband rate
+
+        Args:
+            samples: Input samples at baseband rate (e.g., 8 kHz)
+
+        Returns:
+            Processed samples with ionospheric fading applied
+        """
+        from scipy import signal as scipy_signal
+
+        if self._vh_channel is None:
+            return samples
+
+        input_rate = self._input_source.sample_rate
+        n_samples = len(samples)
+
+        # RF processing parameters
+        rf_rate = 1_000_000  # 1 MHz RF sample rate
+        upsample_factor = int(rf_rate / input_rate)  # 125 for 8kHz -> 1MHz
+        rf_carrier_hz = 100_000  # 100 kHz carrier within the 1 MHz band
+
+        # Initialize RF processing state if needed
+        if not hasattr(self, '_vh_rf_state'):
+            self._init_vh_rf_state(input_rate, rf_rate, rf_carrier_hz)
+
+        # === Step 1: Upsample to RF rate ===
+        n_rf_samples = n_samples * upsample_factor
+        rf_samples = scipy_signal.resample(samples, n_rf_samples).astype(np.complex128)
+
+        # === Step 2: Mix up to RF carrier ===
+        state = self._vh_rf_state
+        t_rf = np.arange(n_rf_samples) / rf_rate + state['rf_time']
+        state['rf_time'] += n_rf_samples / rf_rate
+        rf_signal = rf_samples * np.exp(1j * 2 * np.pi * rf_carrier_hz * t_rf)
+
+        # === Step 3: Apply Vogler-Hoffmeyer channel at RF rate ===
+        # Temporarily update VH channel sample rate to RF rate
+        old_config = self._vh_channel.config
+        if old_config.sample_rate != rf_rate:
+            # Create new config at RF rate
+            from hfpathsim.core.vogler_hoffmeyer import VoglerHoffmeyerConfig
+            rf_config = VoglerHoffmeyerConfig(
+                modes=old_config.modes,
+                sample_rate=rf_rate,
+                spread_f_enabled=old_config.spread_f_enabled,
+                random_seed=old_config.random_seed,
+            )
+            self._vh_rf_channel = VoglerHoffmeyerChannel(rf_config)
+        elif not hasattr(self, '_vh_rf_channel'):
+            self._vh_rf_channel = self._vh_channel
+
+        rf_processed = self._vh_rf_channel.process(rf_signal)
+
+        # === Step 4: Mix back down to baseband ===
+        baseband_signal = rf_processed * np.exp(-1j * 2 * np.pi * rf_carrier_hz * t_rf)
+
+        # === Step 5: Lowpass filter (anti-aliasing) ===
+        filtered = scipy_signal.sosfilt(state['lpf_sos'], baseband_signal)
+
+        # === Step 6: Downsample back to input rate ===
+        output = scipy_signal.resample(filtered, n_samples).astype(np.complex64)
+
+        if not hasattr(self, '_vh_rf_debug'):
+            self._vh_rf_debug = True
+            print(f"DEBUG VH RF: {input_rate/1000:.0f}kHz -> {rf_rate/1e6:.0f}MHz -> "
+                  f"{input_rate/1000:.0f}kHz, carrier={rf_carrier_hz/1000:.0f}kHz")
+            print(f"DEBUG VH RF: in={np.max(np.abs(samples)):.4f}, "
+                  f"rf={np.max(np.abs(rf_processed)):.4f}, "
+                  f"out={np.max(np.abs(output)):.4f}")
+
+        return output
+
+    def _init_vh_rf_state(self, input_rate: float, rf_rate: float, rf_carrier_hz: float):
+        """Initialize state for Vogler-Hoffmeyer RF processing chain."""
+        from scipy import signal as scipy_signal
+
+        # Design lowpass filter for anti-aliasing before downsampling
+        # Cutoff at input_rate/2 (Nyquist of original signal)
+        cutoff_normalized = (input_rate / 2) / (rf_rate / 2)
+        lpf_sos = scipy_signal.butter(8, cutoff_normalized, btype='low', output='sos')
+
+        self._vh_rf_state = {
+            'rf_time': 0.0,  # Running time for mixer phase continuity
+            'lpf_sos': lpf_sos,
+            'rf_rate': rf_rate,
+            'input_rate': input_rate,
+            'rf_carrier_hz': rf_carrier_hz,
+        }
+
+        print(f"DEBUG: VH RF initialized: rf_rate={rf_rate/1e6:.0f}MHz, "
+              f"carrier={rf_carrier_hz/1000:.0f}kHz")
 
     def _process_block(self):
         """Process one block of samples through the full chain.
@@ -841,8 +1262,14 @@ class MainWindow(QMainWindow):
         if not self._running or self._input_source is None:
             return
 
-        # Read samples
-        block_size = 4096
+        # Calculate block size to match real-time rate
+        # Timer fires every 50ms, so read 50ms worth of samples
+        # This prevents buffer over/underflow and maintains phase continuity
+        timer_interval_sec = 0.05  # 50ms timer
+        sample_rate = self._input_source.sample_rate
+        block_size = int(sample_rate * timer_interval_sec)
+        block_size = max(256, min(block_size, 8192))  # Clamp to reasonable range
+
         samples = self._input_source.read(block_size)
 
         if samples is None or len(samples) == 0:
@@ -852,22 +1279,46 @@ class MainWindow(QMainWindow):
         self._input_spectrum.update_data(samples)
 
         # Process through channel model
+        if not hasattr(self, '_debug_logged'):
+            self._debug_logged = True
+            print(f"DEBUG _process_block: model={self._current_model}, "
+                  f"watterson={self._watterson_channel is not None}, "
+                  f"input_mag={np.max(np.abs(samples)):.4f}")
+
         if self._current_model == "watterson" and self._watterson_channel:
             channel_output = self._watterson_channel.process_block(samples)
+            if not hasattr(self, '_debug_logged2'):
+                self._debug_logged2 = True
+                print(f"DEBUG watterson output: max_mag={np.max(np.abs(channel_output)):.4f}")
         elif self._current_model == "vogler_hoffmeyer" and self._vh_channel:
-            channel_output = self._vh_channel.process(samples)
+            # Vogler-Hoffmeyer requires RF-rate processing - upsample, process, downsample
+            channel_output = self._process_vh_with_resampling(samples)
         elif self._current_model == "vogler" and self._channel:
-            channel_output = self._channel.process(samples)
+            # Vogler requires RF-rate processing - upsample, process, downsample
+            channel_output = self._process_vogler_with_resampling(samples)
         else:
             channel_output = samples
+
+        after_channel_mag = np.max(np.abs(channel_output))
 
         # Apply noise if enabled
         if self._noise_panel.is_noise_enabled() and self._noise_generator:
             channel_output = self._noise_generator.add_noise(channel_output)
+            if not hasattr(self, '_debug_noise'):
+                self._debug_noise = True
+                print(f"DEBUG noise: enabled=True, sample_rate={self._noise_generator.sample_rate}, "
+                      f"snr={self._noise_generator.config.snr_db}dB, "
+                      f"after_noise_mag={np.max(np.abs(channel_output)):.4f}")
 
         # Apply AGC if enabled
         if self._impairments_panel.is_agc_enabled() and self._agc:
+            before_agc = np.max(np.abs(channel_output))
             channel_output = self._agc.process_block(channel_output)
+            if not hasattr(self, '_debug_agc'):
+                self._debug_agc = True
+                print(f"DEBUG agc: enabled=True, sample_rate={self._agc.sample_rate}, "
+                      f"before={before_agc:.4f}, after={np.max(np.abs(channel_output)):.4f}, "
+                      f"gain={self._agc.current_gain_db:.1f}dB")
 
         # Apply limiter if enabled
         if self._impairments_panel.is_limiter_enabled() and self._limiter:
@@ -877,12 +1328,37 @@ class MainWindow(QMainWindow):
         if self._impairments_panel.is_freq_offset_enabled() and self._freq_offset:
             channel_output = self._freq_offset.process(channel_output)
 
+        # Debug output - first 5 blocks show detailed trace
+        if not hasattr(self, '_block_count'):
+            self._block_count = 0
+        self._block_count += 1
+
+        if self._block_count <= 5:
+            noise_rate = self._noise_generator.sample_rate if self._noise_generator else 'N/A'
+            agc_rate = self._agc.sample_rate if self._agc else 'N/A'
+            agc_gain = self._agc.current_gain_db if self._agc else 0
+            print(f"Block {self._block_count}: in={np.max(np.abs(samples)):.3f} -> "
+                  f"out={np.max(np.abs(channel_output)):.3f}, "
+                  f"noise_sr={noise_rate}, agc_sr={agc_rate}, agc={agc_gain:.1f}dB")
+        elif self._block_count % 100 == 0:
+            print(f"Block {self._block_count}: input_mag={np.max(np.abs(samples)):.3f}, "
+                  f"output_mag={np.max(np.abs(channel_output)):.3f}, "
+                  f"agc_gain={self._agc.current_gain_db if self._agc else 'N/A'}dB")
+
         # Update output spectrum
         self._output_spectrum.update_data(channel_output)
 
         # Write to output sink if enabled
         if self._output_enabled and self._output_sink and self._output_sink.is_open:
             written = self._output_sink.write(channel_output)
+            if self._block_count <= 5:
+                print(f"  Audio write: {written}/{len(channel_output)} samples, "
+                      f"buffer_fill={self._output_sink.buffer_fill:.1f}%")
+        else:
+            # Debug: show why output isn't working
+            if not hasattr(self, '_debug_output_shown'):
+                self._debug_output_shown = True
+                print(f"DEBUG: output_enabled={self._output_enabled}, sink={self._output_sink is not None}, is_open={self._output_sink.is_open if self._output_sink else 'N/A'}")
             # Update output status periodically
             if hasattr(self._output_sink, 'buffer_fill'):
                 self._output_config.update_status(

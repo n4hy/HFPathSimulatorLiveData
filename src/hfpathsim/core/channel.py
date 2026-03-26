@@ -93,6 +93,9 @@ class HFChannel:
         # Callbacks for state updates
         self._state_callbacks: list[Callable[[ChannelState], None]] = []
 
+        # Baseband fading state (for audio-rate signals)
+        self._baseband_fading_state = self._init_baseband_fading()
+
         # Initialize ray tracing if enabled
         if self.use_ray_tracing:
             self._init_ray_tracing()
@@ -112,6 +115,69 @@ class HFChannel:
         # Use same resolution as channel update rate
         doppler_max = 20.0  # Hz, covers most HF cases
         self._doppler_axis = np.linspace(-doppler_max, doppler_max, 64)
+
+    def _init_baseband_fading(self) -> dict:
+        """Initialize Rayleigh fading generators for baseband operation.
+
+        For baseband signals (audio rate), we apply time-varying Rayleigh
+        fading per mode without the RF-specific reflection coefficient.
+        """
+        # Block update rate (how often fading is updated)
+        block_duration = self.config.block_size / self.config.sample_rate_hz
+        update_rate = 1.0 / block_duration if block_duration > 0 else 20.0
+
+        # Create fading state for each mode
+        mode_states = []
+        for mode in self.params.modes:
+            if not mode.enabled:
+                continue
+
+            # Filter length based on Doppler spread and update rate
+            doppler = self.params.doppler_spread_hz
+            if doppler > 0:
+                coherence_blocks = update_rate / doppler
+                filter_len = max(16, min(64, int(coherence_blocks * 2)))
+            else:
+                filter_len = 16
+
+            # Gaussian Doppler filter
+            t = np.arange(filter_len) - filter_len // 2
+            f_norm = doppler / update_rate if update_rate > 0 else 0.05
+            sigma = max(1.0, 1.0 / (2 * np.pi * f_norm)) if f_norm > 0 else filter_len / 4
+            doppler_filter = np.exp(-0.5 * (t / sigma) ** 2)
+            doppler_filter = doppler_filter / np.sqrt(np.sum(doppler_filter**2))
+
+            state = {
+                "mode": mode,
+                "doppler_filter": doppler_filter.astype(np.complex128),
+                "noise_buffer": (np.random.randn(filter_len)
+                    + 1j * np.random.randn(filter_len)) / np.sqrt(2),
+                "current_gain": complex(mode.relative_amplitude, 0.0),
+            }
+            mode_states.append(state)
+
+        return {
+            "mode_states": mode_states,
+            "update_rate": update_rate,
+        }
+
+    def _update_baseband_fading(self):
+        """Update Rayleigh fading coefficients for baseband operation."""
+        for state in self._baseband_fading_state["mode_states"]:
+            mode = state["mode"]
+
+            # Generate new complex Gaussian noise
+            noise = (np.random.randn() + 1j * np.random.randn()) / np.sqrt(2)
+
+            # Shift buffer and add new noise
+            state["noise_buffer"] = np.roll(state["noise_buffer"], -1)
+            state["noise_buffer"][-1] = noise
+
+            # Filter through Doppler shaping filter
+            filtered = np.sum(state["noise_buffer"] * state["doppler_filter"])
+
+            # Apply mode amplitude (Rayleigh fading)
+            state["current_gain"] = filtered * mode.relative_amplitude
 
     def _load_gpu_module(self):
         """Lazy load GPU acceleration module."""
@@ -350,15 +416,21 @@ class HFChannel:
                Γ(1+iσω)Γ(1/2-χ)Γ(1/2+χ)
 
         Args:
-            freq_hz: Frequency array in Hz
+            freq_hz: Frequency array in Hz (FFT bin frequencies)
 
         Returns:
             Complex reflection coefficient array
         """
+        # The freq_hz array contains FFT bin frequencies relative to DC.
+        # For RF processing, we need to offset by the operating frequency
+        # to get the actual RF frequencies seen by the ionosphere.
+        rf_center_hz = self.params.frequency_mhz * 1e6
+        actual_freq_hz = rf_center_hz + freq_hz
+
         # Convert to normalized angular frequency
         # Normalize to critical frequency
         fc = self.params.foF2 * 1e6  # Convert MHz to Hz
-        omega_norm = freq_hz / fc  # Normalized frequency
+        omega_norm = actual_freq_hz / fc  # Normalized frequency
 
         sigma = self.params.sigma
         chi = self.params.chi
@@ -476,31 +548,60 @@ class HFChannel:
         return R.astype(np.complex64)
 
     def _compute_transfer_function(self):
-        """Compute complete channel transfer function H(f,t)."""
-        # Get base reflection coefficient
-        R = self._compute_reflection_coefficient(self._freq_axis)
+        """Compute complete channel transfer function H(f,t).
 
-        # Apply fading
-        H = self._apply_fading(R)
+        For baseband signals (sample rate < 100kHz), uses a simplified model
+        that applies Rayleigh fading per mode without the RF reflection
+        coefficient calculation which is only valid for MHz frequencies.
+        """
+        N = self.config.block_size
 
-        # Sum contributions from multiple modes
-        H_total = np.zeros_like(H)
-        for mode in self.params.modes:
-            if not mode.enabled:
-                continue
+        # Detect baseband operation - reflection coefficient model is only
+        # valid for RF frequencies around foF2 (MHz range)
+        is_baseband = self.config.sample_rate_hz < 100000
 
-            # Apply mode-specific delay and amplitude
-            delay_samples = int(
-                mode.delay_offset_ms / 1000 * self.config.sample_rate_hz
-            )
-            phase_shift = np.exp(
-                -1j * 2 * np.pi * self._freq_axis * mode.delay_offset_ms / 1000
-            )
-            H_total += mode.relative_amplitude * H * phase_shift
+        if is_baseband:
+            # Update baseband Rayleigh fading coefficients
+            self._update_baseband_fading()
 
-        # Normalize
-        if np.max(np.abs(H_total)) > 0:
-            H_total = H_total / np.max(np.abs(H_total))
+            # For baseband, use unity base with time-varying mode gains
+            H = np.ones(N, dtype=np.complex64)
+
+            # Sum contributions from modes with Rayleigh fading gains
+            H_total = np.zeros(N, dtype=np.complex128)
+            for state in self._baseband_fading_state["mode_states"]:
+                mode = state["mode"]
+                fading_gain = state["current_gain"]
+
+                # Apply mode-specific delay (creates frequency-selective fading)
+                phase_shift = np.exp(
+                    -1j * 2 * np.pi * self._freq_axis * mode.delay_offset_ms / 1000
+                )
+                H_total += fading_gain * H * phase_shift
+
+        else:
+            # RF operation - use full Vogler model
+            R = self._compute_reflection_coefficient(self._freq_axis)
+            H = self._apply_fading(R)
+
+            # Sum contributions from multiple modes
+            H_total = np.zeros_like(H)
+            for mode in self.params.modes:
+                if not mode.enabled:
+                    continue
+
+                phase_shift = np.exp(
+                    -1j * 2 * np.pi * self._freq_axis * mode.delay_offset_ms / 1000
+                )
+                H_total += mode.relative_amplitude * H * phase_shift
+
+        # Normalize to prevent excessive gain
+        max_gain = np.max(np.abs(H_total))
+        if max_gain > 0:
+            # For baseband, allow fading below unity (don't normalize to 1)
+            # Just prevent excessive amplification
+            if max_gain > 2.0:
+                H_total = H_total / max_gain * 2.0
 
         # Update state
         self._state.transfer_function = H_total

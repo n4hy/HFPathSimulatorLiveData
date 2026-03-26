@@ -130,11 +130,13 @@ These effects are what make real HF communication challenging, and why testing w
 
 HF Path Simulator includes three channel models:
 
-| Model | Best For | Characteristics |
-|-------|----------|-----------------|
-| **Watterson** | General HF testing | Classic ITU-R F.520 model, three propagation conditions |
-| **Vogler** | Research applications | Physics-based, uses real ionospheric parameters |
-| **Vogler-Hoffmeyer** | Advanced simulation | Full model with sporadic-E, spread-F, magnetic storms |
+| Model | Best For | Characteristics | Processing |
+|-------|----------|-----------------|------------|
+| **Watterson** | General HF testing | Classic ITU-R F.520 model, three propagation conditions | Baseband |
+| **Vogler** | Research applications | Physics-based, uses real ionospheric parameters | RF chain (1 MHz) |
+| **Vogler-Hoffmeyer** | Advanced simulation | Full model with sporadic-E, spread-F, magnetic storms | RF chain (1 MHz) |
+
+**Note:** Vogler and Vogler-Hoffmeyer models use a full RF processing chain (upsample to 1 MHz → mix to RF → apply channel → mix down → filter → downsample) for physically accurate ionospheric simulation. Watterson operates at baseband since it's a statistical model.
 
 ### Quick Model Selection
 

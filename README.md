@@ -46,6 +46,16 @@ The simulator implements the Vogler-Hoffmeyer reflection coefficient model from 
   - Disturbed: τ=4ms, ν=2Hz (magnetic storm)
   - Flutter: τ=7ms, ν=10Hz (high-latitude)
 
+- **RF Processing Chain (Vogler & Vogler-Hoffmeyer)**
+  - Full RF-rate processing for physically accurate ionospheric simulation
+  - Upsample from baseband (8 kHz) to 1 MHz RF rate
+  - Mix to 100 kHz RF carrier frequency
+  - Apply ionospheric channel model at RF rate
+  - Mix back to baseband
+  - 8th-order Butterworth anti-aliasing filter
+  - Downsample back to baseband rate
+  - Watterson model operates at baseband (no RF processing required)
+
 - **ITU-R Standardized Channel Models (NEW)**
   - CCIR 520 / ITU-R F.520-2: Classic HF channel simulator presets
   - ITU-R F.1289: Wideband HF channel (up to 24 kHz bandwidth)
@@ -1803,6 +1813,18 @@ tests/test_vogler.py ......................                               [100%]
 - [x] Cloud deployment option (AWS/GCP/Azure)
 - [x] REST API for remote control
 - [x] Web-based dashboard alternative
+
+### Phase 9: RF Processing Chain & Audio Improvements ✓
+- [x] RF processing chain for Vogler and Vogler-Hoffmeyer models
+  - Upsample from baseband (8 kHz) to 1 MHz RF rate
+  - Mix to 100 kHz RF carrier frequency
+  - Apply ionospheric channel model at RF rate
+  - Mix back to baseband with anti-aliasing filter
+  - Downsample back to baseband rate
+- [x] Real voice samples for SSB signal generator (CMU Arctic corpus)
+- [x] Fixed Watterson Doppler filter design (proper fade depth 20-27 dB)
+- [x] Proper Rayleigh fading with audible ionospheric effects
+- [x] Signal generator with RTTY, SSB Voice, and PSK31 modes
 
 ---
 

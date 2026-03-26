@@ -199,27 +199,33 @@ class WattersonChannel:
         """Initialize fading generators for each tap."""
         self._tap_states = []
 
+        # Calculate actual block update rate (blocks per second)
+        # With 50ms blocks at 8kHz, this is 20 Hz
+        block_size = max(1, int(self.config.sample_rate_hz * 0.05))  # 50ms blocks
+        actual_update_rate = self.config.sample_rate_hz / block_size
+
         for tap in self.config.taps:
             # Delay in samples
             delay_samples = int(
                 tap.delay_ms / 1000.0 * self.config.sample_rate_hz
             )
 
-            # Doppler filter design
-            # Filter length based on coherence time
+            # Doppler filter design - filter length based on ACTUAL update rate
+            # For Rayleigh fading, we need ~10 samples per fade cycle
             if tap.doppler_spread_hz > 0:
-                coherence_samples = int(
-                    self.config.sample_rate_hz / tap.doppler_spread_hz / 4
-                )
-                filter_len = max(64, min(1024, coherence_samples))
+                # Coherence time in blocks
+                coherence_blocks = actual_update_rate / tap.doppler_spread_hz
+                # Filter needs to span a few coherence times
+                filter_len = max(16, min(128, int(coherence_blocks * 2)))
             else:
-                filter_len = 64
+                filter_len = 16
 
             # Create Doppler shaping filter
             doppler_filter = self._create_doppler_filter(
                 tap.doppler_spread_hz,
                 tap.doppler_spectrum,
                 filter_len,
+                actual_update_rate,
             )
 
             state = {
@@ -227,9 +233,14 @@ class WattersonChannel:
                 "delay_samples": delay_samples,
                 "doppler_filter": doppler_filter,
                 "filter_state": np.zeros(len(doppler_filter) - 1, dtype=np.complex128),
-                "current_gain": complex(1.0, 0.0),
-                "noise_buffer": self._rng.standard_normal(filter_len)
-                + 1j * self._rng.standard_normal(filter_len),
+                "current_gain": complex(tap.amplitude, 0.0),
+                # Noise buffer initialized with complex Gaussian
+                "noise_buffer": (self._rng.standard_normal(filter_len)
+                    + 1j * self._rng.standard_normal(filter_len)) / np.sqrt(2),
+                # Delay line buffer for phase-continuous processing
+                "delay_buffer": np.zeros(max(1, delay_samples), dtype=np.complex128),
+                # Store actual update rate for diagnostics
+                "actual_update_rate": actual_update_rate,
             }
 
             self._tap_states.append(state)
@@ -239,13 +250,19 @@ class WattersonChannel:
         doppler_spread_hz: float,
         spectrum_type: DopplerSpectrum,
         length: int,
+        actual_update_rate: float = None,
     ) -> np.ndarray:
         """Create FIR filter for Doppler spectrum shaping.
+
+        The filter shapes white noise to have the desired Doppler spectrum.
+        For Rayleigh fading, the output should have unit variance so that
+        the magnitude follows a Rayleigh distribution.
 
         Args:
             doppler_spread_hz: Two-sided Doppler spread
             spectrum_type: Doppler spectrum shape
             length: Filter length
+            actual_update_rate: Actual block update rate (Hz)
 
         Returns:
             FIR filter coefficients
@@ -256,14 +273,19 @@ class WattersonChannel:
             h[length // 2] = 1.0
             return h
 
-        # Normalized frequency (relative to sample rate)
-        # We're filtering at the block update rate, not sample rate
-        f_norm = doppler_spread_hz / self.config.update_rate_hz
+        # Use actual update rate if provided, otherwise config value
+        update_rate = actual_update_rate or self.config.update_rate_hz
+
+        # Normalized Doppler frequency (relative to update rate)
+        f_norm = doppler_spread_hz / update_rate
 
         if spectrum_type == DopplerSpectrum.GAUSSIAN:
             # Gaussian spectrum -> Gaussian impulse response
+            # The sigma controls the correlation time
+            # Smaller sigma = faster fading = more variation per block
             t = np.arange(length) - length // 2
-            sigma = length / (4 * np.pi * f_norm) if f_norm > 0 else length / 4
+            # sigma in samples = 1/(2*pi*f_norm) to match Doppler spread
+            sigma = max(1.0, 1.0 / (2 * np.pi * f_norm)) if f_norm > 0 else length / 4
             h = np.exp(-0.5 * (t / sigma) ** 2)
 
         elif spectrum_type == DopplerSpectrum.FLAT:
@@ -274,7 +296,6 @@ class WattersonChannel:
 
         elif spectrum_type == DopplerSpectrum.JAKES:
             # Jakes spectrum (U-shaped)
-            # For mobile channels, not typical HF
             t = np.arange(length) - length // 2
             t = np.where(t == 0, 1e-10, t)
             h = np.sinc(2 * f_norm * t) * np.cos(np.pi * f_norm * t)
@@ -282,38 +303,52 @@ class WattersonChannel:
         else:
             h = np.ones(length)
 
-        # Normalize
+        # Normalize for unit variance output (Rayleigh fading)
+        # This ensures |output|^2 has mean = 1
         h = h / np.sqrt(np.sum(h**2))
 
         return h.astype(np.complex128)
 
     def _update_fading_coefficients(self):
-        """Update fading coefficients for all taps."""
+        """Update fading coefficients for all taps.
+
+        Generates Rayleigh-distributed fading for each tap by filtering
+        complex Gaussian noise through a Doppler-shaping filter.
+        The filtered output is complex Gaussian, so its magnitude
+        follows a Rayleigh distribution with deep fades.
+        """
         for state in self._tap_states:
             tap = state["tap"]
 
-            # Generate new noise sample
+            # Generate new complex Gaussian noise sample (unit variance per component)
             noise = (
                 self._rng.standard_normal()
                 + 1j * self._rng.standard_normal()
             ) / np.sqrt(2)
 
-            # Filter through Doppler spectrum shaping filter
+            # Shift noise buffer and add new sample
             state["noise_buffer"] = np.roll(state["noise_buffer"], -1)
             state["noise_buffer"][-1] = noise
 
+            # Convolve with Doppler filter (matched to spectrum shape)
+            # The filter is normalized so output has unit variance
             filtered = np.sum(state["noise_buffer"] * state["doppler_filter"])
 
-            # Apply tap amplitude
+            # For Rayleigh fading, the magnitude of 'filtered' follows Rayleigh distribution
+            # Mean magnitude = sqrt(pi/2) ≈ 1.25, but with deep fades near zero
+            # Scale by tap amplitude
             scatter_component = filtered * tap.amplitude
 
-            # Add specular component for Rician fading
+            # Add specular (LOS) component for Rician fading
             if tap.is_specular:
                 k_linear = 10 ** (tap.k_factor_db / 10)
+                # Specular component is constant (deterministic)
                 specular = np.sqrt(k_linear / (1 + k_linear)) * tap.amplitude
+                # Scale scatter component
                 scatter_component *= np.sqrt(1 / (1 + k_linear))
                 state["current_gain"] = specular + scatter_component
             else:
+                # Pure Rayleigh (no specular component)
                 state["current_gain"] = scatter_component
 
     def process(self, input_samples: np.ndarray) -> np.ndarray:
@@ -360,9 +395,12 @@ class WattersonChannel:
         return output.astype(np.complex64)
 
     def process_block(self, input_samples: np.ndarray) -> np.ndarray:
-        """Process a block of samples efficiently.
+        """Process a block of samples with phase-continuous delay lines.
 
-        Uses vectorized operations for better performance.
+        Uses delay line buffers to maintain continuity across block boundaries.
+        Gain is interpolated across the block to avoid discontinuities at
+        block boundaries. Delay buffer stores RAW samples without gain;
+        gain is applied at output time.
 
         Args:
             input_samples: Complex input samples
@@ -373,19 +411,39 @@ class WattersonChannel:
         n_samples = len(input_samples)
         output = np.zeros(n_samples, dtype=np.complex128)
 
-        # Update fading at block rate (approximation for efficiency)
+        # Save old gains BEFORE updating (for interpolation)
+        old_gains = [state["current_gain"] for state in self._tap_states]
+
+        # Update fading at block rate
         self._update_fading_coefficients()
 
-        # Process each tap
-        for state in self._tap_states:
+        # Precompute interpolation weights (0 at start of block, 1 at end)
+        t = np.linspace(0, 1, n_samples, endpoint=False, dtype=np.float64)
+
+        # Process each tap with proper delay line and gain interpolation
+        for idx, state in enumerate(self._tap_states):
             delay = state["delay_samples"]
-            gain = state["current_gain"]
+            delay_buffer = state["delay_buffer"]
+
+            # Interpolate gain smoothly across block to avoid clicks
+            gain_old = old_gains[idx]
+            gain_new = state["current_gain"]
+            interpolated_gain = gain_old * (1 - t) + gain_new * t
 
             if delay == 0:
-                output += input_samples * gain
-            elif delay < n_samples:
-                # Delayed contribution
-                output[delay:] += input_samples[:-delay] * gain
+                # No delay - direct path with interpolated gain
+                output += input_samples * interpolated_gain
+            else:
+                # Get raw samples that will be output this block
+                # delay_buffer stores RAW samples (no gain applied)
+                extended = np.concatenate([delay_buffer, input_samples])
+                raw_output_samples = extended[:n_samples]
+
+                # Apply interpolated gain at output time
+                output += raw_output_samples * interpolated_gain
+
+                # Update delay buffer with RAW samples (no gain)
+                state["delay_buffer"] = extended[n_samples:n_samples + delay].astype(np.complex128)
 
         self._sample_count += n_samples
         self._time += n_samples / self.config.sample_rate_hz

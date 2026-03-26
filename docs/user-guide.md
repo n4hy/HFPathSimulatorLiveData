@@ -126,6 +126,28 @@ engine.configure_vogler_hoffmeyer(
 - **Spread-F**: Nighttime equatorial irregularities causing signal scattering
 - **Magnetic Storm**: Severe ionospheric disturbance during solar events
 
+### RF Processing Chain
+
+The **Vogler** and **Vogler-Hoffmeyer** models use a full RF processing chain for physically accurate ionospheric simulation. This is necessary because ionospheric propagation physics operate at RF frequencies, not baseband.
+
+**Processing Steps:**
+
+1. **Upsample**: Baseband signal (e.g., 8 kHz) → 1 MHz RF rate (125x interpolation)
+2. **Mix Up**: Multiply by RF carrier (100 kHz) to create RF signal
+3. **Apply Channel**: Ionospheric model processes at 1 MHz rate
+4. **Mix Down**: Multiply by conjugate carrier to return to baseband
+5. **Filter**: 8th-order Butterworth lowpass (anti-aliasing)
+6. **Downsample**: 1 MHz → baseband rate
+
+**Why RF Processing?**
+
+- Ionospheric reflection coefficients are frequency-dependent
+- Multipath delays at RF translate to phase shifts at baseband
+- Doppler effects scale with carrier frequency
+- Physical validity requires MHz-rate processing
+
+**Note:** The **Watterson** model operates directly at baseband since it's a statistical tapped-delay-line model that doesn't require RF-rate physics.
+
 ### ITU-R Standardized Channel Models
 
 For compliance testing and standardized modem evaluation, use the ITU-R channel models:
