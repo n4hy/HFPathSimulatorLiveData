@@ -35,6 +35,8 @@ try:
     AGCProcessor = _hfpathsim_gpu.AGCProcessor
     LimiterProcessor = _hfpathsim_gpu.LimiterProcessor
     NoiseGenerator = _hfpathsim_gpu.NoiseGenerator
+    ResamplerProcessor = _hfpathsim_gpu.ResamplerProcessor
+    DispersionProcessor = _hfpathsim_gpu.DispersionProcessor
 except ImportError:
     _gpu_module = None
     VHRFChainProcessor = None
@@ -42,6 +44,8 @@ except ImportError:
     AGCProcessor = None
     LimiterProcessor = None
     NoiseGenerator = None
+    ResamplerProcessor = None
+    DispersionProcessor = None
 
 # Fall back to CuPy
 if _gpu_module is None:

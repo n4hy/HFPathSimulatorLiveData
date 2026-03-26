@@ -201,6 +201,50 @@ extern "C" {
                       int noise_type, float param1, float param2, float param3, int n_samples);
     void reset_noise_gen_cpu(void* state_ptr, unsigned long seed);
     void free_noise_gen_cpu(void* state_ptr);
+
+    // Resampler - GPU
+    void* init_resampler_gpu(float input_rate, float output_rate, int max_input_samples);
+    int resample_gpu(void* state_ptr, const float* input_real, const float* input_imag,
+                     int n_input, float* output_real, float* output_imag, int* n_output);
+    int resample_arbitrary_gpu(void* state_ptr, const float* input_real, const float* input_imag,
+                               int n_input, float* output_real, float* output_imag, int n_output);
+    int get_output_length_gpu(void* state_ptr, int n_input);
+    bool is_resampler_using_gpu(void* state_ptr);
+    void reset_resampler_gpu(void* state_ptr);
+    void free_resampler_gpu(void* state_ptr);
+
+    // Resampler - CPU fallback
+    void* init_resampler_cpu(float input_rate, float output_rate, int max_input_samples);
+    int resample_cpu(void* state_ptr, const float* input_real, const float* input_imag,
+                     int n_input, float* output_real, float* output_imag, int* n_output);
+    int resample_arbitrary_cpu(void* state_ptr, const float* input_real, const float* input_imag,
+                               int n_input, float* output_real, float* output_imag, int n_output);
+    int get_output_length_cpu(void* state_ptr, int n_input);
+    void reset_resampler_cpu(void* state_ptr);
+    void free_resampler_cpu(void* state_ptr);
+
+    // Dispersion filter - GPU
+    void* init_dispersion_gpu(float sample_rate, int max_samples);
+    int set_dispersion_coefficient_gpu(void* state_ptr, float d_us_per_MHz);
+    int apply_dispersion_gpu(void* state_ptr, const float* input_real, const float* input_imag,
+                             int n_samples, float* output_real, float* output_imag);
+    int apply_inverse_dispersion_gpu(void* state_ptr, const float* input_real, const float* input_imag,
+                                     int n_samples, float* output_real, float* output_imag);
+    int get_dispersion_filter_length(void* state_ptr);
+    bool is_dispersion_using_gpu(void* state_ptr);
+    void reset_dispersion_gpu(void* state_ptr);
+    void free_dispersion_gpu(void* state_ptr);
+
+    // Dispersion filter - CPU fallback
+    void* init_dispersion_cpu(float sample_rate, int max_samples);
+    int set_dispersion_coefficient_cpu(void* state_ptr, float d_us_per_MHz);
+    int apply_dispersion_cpu(void* state_ptr, const float* input_real, const float* input_imag,
+                             int n_samples, float* output_real, float* output_imag);
+    int apply_inverse_dispersion_cpu(void* state_ptr, const float* input_real, const float* input_imag,
+                                     int n_samples, float* output_real, float* output_imag);
+    int get_dispersion_filter_length_cpu(void* state_ptr);
+    void reset_dispersion_cpu(void* state_ptr);
+    void free_dispersion_cpu(void* state_ptr);
 }
 
 /**
@@ -1134,6 +1178,222 @@ py::array_t<float> compute_spectrum(
     return result;
 }
 
+/**
+ * Resampler processor wrapper class (auto-selects GPU/CPU).
+ */
+class ResamplerProcessor {
+public:
+    ResamplerProcessor(float input_rate, float output_rate, int max_input_samples)
+        : input_rate_(input_rate), output_rate_(output_rate),
+          max_input_samples_(max_input_samples), gpu_state_(nullptr), cpu_state_(nullptr)
+    {
+        // Try GPU first
+        gpu_state_ = init_resampler_gpu(input_rate, output_rate, max_input_samples);
+        if (!gpu_state_ || !is_resampler_using_gpu(gpu_state_)) {
+            if (gpu_state_) {
+                free_resampler_gpu(gpu_state_);
+                gpu_state_ = nullptr;
+            }
+            cpu_state_ = init_resampler_cpu(input_rate, output_rate, max_input_samples);
+        }
+    }
+
+    ~ResamplerProcessor() {
+        if (gpu_state_) free_resampler_gpu(gpu_state_);
+        if (cpu_state_) free_resampler_cpu(cpu_state_);
+    }
+
+    std::tuple<py::array_t<float>, py::array_t<float>> process(
+        py::array_t<float> input_real,
+        py::array_t<float> input_imag
+    ) {
+        py::buffer_info real_buf = input_real.request();
+        py::buffer_info imag_buf = input_imag.request();
+        int n_input = real_buf.size;
+
+        int max_output = (int)(n_input * output_rate_ / input_rate_) + 1024;
+        std::vector<float> out_real(max_output), out_imag(max_output);
+        int n_output = 0;
+
+        int ret;
+        if (gpu_state_) {
+            ret = resample_gpu(gpu_state_,
+                              static_cast<float*>(real_buf.ptr),
+                              static_cast<float*>(imag_buf.ptr),
+                              n_input, out_real.data(), out_imag.data(), &n_output);
+        } else {
+            ret = resample_cpu(cpu_state_,
+                              static_cast<float*>(real_buf.ptr),
+                              static_cast<float*>(imag_buf.ptr),
+                              n_input, out_real.data(), out_imag.data(), &n_output);
+        }
+
+        if (ret != 0) {
+            throw std::runtime_error("Resampling failed with error " + std::to_string(ret));
+        }
+
+        // Create output arrays with explicit shape and strides
+        std::vector<py::ssize_t> shape = {static_cast<py::ssize_t>(n_output)};
+        std::vector<py::ssize_t> strides = {static_cast<py::ssize_t>(sizeof(float))};
+        py::array_t<float> result_real(shape, strides);
+        py::array_t<float> result_imag(shape, strides);
+        memcpy(static_cast<float*>(result_real.request().ptr), out_real.data(), n_output * sizeof(float));
+        memcpy(static_cast<float*>(result_imag.request().ptr), out_imag.data(), n_output * sizeof(float));
+
+        return std::make_tuple(result_real, result_imag);
+    }
+
+    int get_output_length(int n_input) {
+        if (gpu_state_) return get_output_length_gpu(gpu_state_, n_input);
+        return get_output_length_cpu(cpu_state_, n_input);
+    }
+
+    void reset() {
+        if (gpu_state_) reset_resampler_gpu(gpu_state_);
+        if (cpu_state_) reset_resampler_cpu(cpu_state_);
+    }
+
+    bool is_using_gpu() const { return gpu_state_ != nullptr; }
+
+private:
+    float input_rate_, output_rate_;
+    int max_input_samples_;
+    void* gpu_state_;
+    void* cpu_state_;
+};
+
+/**
+ * Dispersion filter processor wrapper class (auto-selects GPU/CPU).
+ */
+class DispersionProcessor {
+public:
+    DispersionProcessor(float sample_rate, int max_samples)
+        : sample_rate_(sample_rate), max_samples_(max_samples),
+          gpu_state_(nullptr), cpu_state_(nullptr)
+    {
+        // Try GPU first
+        gpu_state_ = init_dispersion_gpu(sample_rate, max_samples);
+        if (!gpu_state_ || !is_dispersion_using_gpu(gpu_state_)) {
+            if (gpu_state_) {
+                free_dispersion_gpu(gpu_state_);
+                gpu_state_ = nullptr;
+            }
+            cpu_state_ = init_dispersion_cpu(sample_rate, max_samples);
+        }
+    }
+
+    ~DispersionProcessor() {
+        if (gpu_state_) free_dispersion_gpu(gpu_state_);
+        if (cpu_state_) free_dispersion_cpu(cpu_state_);
+    }
+
+    void set_coefficient(float d_us_per_MHz) {
+        int ret;
+        if (gpu_state_) {
+            ret = set_dispersion_coefficient_gpu(gpu_state_, d_us_per_MHz);
+        } else {
+            ret = set_dispersion_coefficient_cpu(cpu_state_, d_us_per_MHz);
+        }
+        if (ret != 0) {
+            throw std::runtime_error("Failed to set dispersion coefficient");
+        }
+    }
+
+    std::tuple<py::array_t<float>, py::array_t<float>> apply_dispersion(
+        py::array_t<float> input_real,
+        py::array_t<float> input_imag
+    ) {
+        py::buffer_info real_buf = input_real.request();
+        py::buffer_info imag_buf = input_imag.request();
+        int n_samples = real_buf.size;
+
+        // Create output arrays with explicit shape and strides
+        std::vector<py::ssize_t> shape = {static_cast<py::ssize_t>(n_samples)};
+        std::vector<py::ssize_t> strides = {static_cast<py::ssize_t>(sizeof(float))};
+        py::array_t<float> out_real(shape, strides);
+        py::array_t<float> out_imag(shape, strides);
+
+        int ret;
+        if (gpu_state_) {
+            ret = apply_dispersion_gpu(gpu_state_,
+                                       static_cast<float*>(real_buf.ptr),
+                                       static_cast<float*>(imag_buf.ptr),
+                                       n_samples,
+                                       static_cast<float*>(out_real.request().ptr),
+                                       static_cast<float*>(out_imag.request().ptr));
+        } else {
+            ret = apply_dispersion_cpu(cpu_state_,
+                                       static_cast<float*>(real_buf.ptr),
+                                       static_cast<float*>(imag_buf.ptr),
+                                       n_samples,
+                                       static_cast<float*>(out_real.request().ptr),
+                                       static_cast<float*>(out_imag.request().ptr));
+        }
+
+        if (ret != 0) {
+            throw std::runtime_error("Dispersion failed with error " + std::to_string(ret));
+        }
+
+        return std::make_tuple(out_real, out_imag);
+    }
+
+    std::tuple<py::array_t<float>, py::array_t<float>> apply_inverse_dispersion(
+        py::array_t<float> input_real,
+        py::array_t<float> input_imag
+    ) {
+        py::buffer_info real_buf = input_real.request();
+        py::buffer_info imag_buf = input_imag.request();
+        int n_samples = real_buf.size;
+
+        // Create output arrays with explicit shape and strides
+        std::vector<py::ssize_t> shape = {static_cast<py::ssize_t>(n_samples)};
+        std::vector<py::ssize_t> strides = {static_cast<py::ssize_t>(sizeof(float))};
+        py::array_t<float> out_real(shape, strides);
+        py::array_t<float> out_imag(shape, strides);
+
+        int ret;
+        if (gpu_state_) {
+            ret = apply_inverse_dispersion_gpu(gpu_state_,
+                                               static_cast<float*>(real_buf.ptr),
+                                               static_cast<float*>(imag_buf.ptr),
+                                               n_samples,
+                                               static_cast<float*>(out_real.request().ptr),
+                                               static_cast<float*>(out_imag.request().ptr));
+        } else {
+            ret = apply_inverse_dispersion_cpu(cpu_state_,
+                                               static_cast<float*>(real_buf.ptr),
+                                               static_cast<float*>(imag_buf.ptr),
+                                               n_samples,
+                                               static_cast<float*>(out_real.request().ptr),
+                                               static_cast<float*>(out_imag.request().ptr));
+        }
+
+        if (ret != 0) {
+            throw std::runtime_error("Inverse dispersion failed with error " + std::to_string(ret));
+        }
+
+        return std::make_tuple(out_real, out_imag);
+    }
+
+    int get_filter_length() {
+        if (gpu_state_) return get_dispersion_filter_length(gpu_state_);
+        return get_dispersion_filter_length_cpu(cpu_state_);
+    }
+
+    void reset() {
+        if (gpu_state_) reset_dispersion_gpu(gpu_state_);
+        if (cpu_state_) reset_dispersion_cpu(cpu_state_);
+    }
+
+    bool is_using_gpu() const { return gpu_state_ != nullptr; }
+
+private:
+    float sample_rate_;
+    int max_samples_;
+    void* gpu_state_;
+    void* cpu_state_;
+};
+
 PYBIND11_MODULE(_hfpathsim_gpu, m) {
     m.doc() = "HF Path Simulator GPU acceleration module (Phase 5: cuFFT)";
 
@@ -1439,4 +1699,45 @@ PYBIND11_MODULE(_hfpathsim_gpu, m) {
              py::arg("seed"),
              "Reset RNG with new seed")
         .def("is_using_gpu", &NoiseGenerator::is_using_gpu);
+
+    // Resampler processor (auto-selects GPU/CPU)
+    py::class_<ResamplerProcessor>(m, "ResamplerProcessor")
+        .def(py::init<float, float, int>(),
+             py::arg("input_rate"),
+             py::arg("output_rate"),
+             py::arg("max_input_samples"),
+             "Initialize resampler with input/output rates")
+        .def("process", &ResamplerProcessor::process,
+             py::arg("input_real"),
+             py::arg("input_imag"),
+             "Resample signal and return (output_real, output_imag)")
+        .def("get_output_length", &ResamplerProcessor::get_output_length,
+             py::arg("n_input"),
+             "Get expected output length for given input length")
+        .def("reset", &ResamplerProcessor::reset,
+             "Reset resampler state")
+        .def("is_using_gpu", &ResamplerProcessor::is_using_gpu);
+
+    // Dispersion filter processor (auto-selects GPU/CPU)
+    py::class_<DispersionProcessor>(m, "DispersionProcessor")
+        .def(py::init<float, int>(),
+             py::arg("sample_rate"),
+             py::arg("max_samples"),
+             "Initialize dispersion filter")
+        .def("set_coefficient", &DispersionProcessor::set_coefficient,
+             py::arg("d_us_per_MHz"),
+             "Set dispersion coefficient in microseconds per MHz")
+        .def("apply_dispersion", &DispersionProcessor::apply_dispersion,
+             py::arg("input_real"),
+             py::arg("input_imag"),
+             "Apply ionospheric dispersion")
+        .def("apply_inverse_dispersion", &DispersionProcessor::apply_inverse_dispersion,
+             py::arg("input_real"),
+             py::arg("input_imag"),
+             "Apply inverse dispersion (equalization)")
+        .def("get_filter_length", &DispersionProcessor::get_filter_length,
+             "Get current chirp filter length")
+        .def("reset", &DispersionProcessor::reset,
+             "Reset dispersion filter state")
+        .def("is_using_gpu", &DispersionProcessor::is_using_gpu);
 }

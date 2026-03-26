@@ -148,7 +148,8 @@ class DispersionModel:
         >>> y = disp.apply_dispersion(x, d)
     """
 
-    def __init__(self, fs: float, mode: str = 'linear'):
+    def __init__(self, fs: float, mode: str = 'linear', max_samples: int = 8192,
+                 use_compiled: bool = True):
         """
         Initialize dispersion model.
 
@@ -156,10 +157,34 @@ class DispersionModel:
             fs: Sample rate (Hz)
             mode: Dispersion mode ('linear' for chirp filter, 'qp' for future
                   full quasi-parabolic implementation)
+            max_samples: Maximum samples per block for compiled implementation
+            use_compiled: If True, use compiled GPU/CPU implementation when available
         """
         self.fs = fs
         self.mode = mode
         self._filter_cache: Dict[Tuple[float, float], np.ndarray] = {}
+        self._compiled_processor = None
+        self._current_d = None
+
+        if use_compiled:
+            try:
+                from ..gpu import DispersionProcessor
+                if DispersionProcessor is not None:
+                    self._compiled_processor = DispersionProcessor(float(fs), max_samples)
+            except ImportError:
+                pass
+
+    @property
+    def is_using_compiled(self) -> bool:
+        """Check if using compiled GPU/CPU implementation."""
+        return self._compiled_processor is not None
+
+    @property
+    def is_using_gpu(self) -> bool:
+        """Check if using GPU implementation."""
+        if self._compiled_processor is not None:
+            return self._compiled_processor.is_using_gpu()
+        return False
 
     @staticmethod
     def compute_d_from_qp(f_c_layer: float, f_carrier: float,
@@ -281,6 +306,24 @@ class DispersionModel:
         if abs(d_us_per_MHz) < 0.01:
             return x.copy()
 
+        # Use compiled implementation if available
+        if self._compiled_processor is not None and preserve_length:
+            # Update coefficient if changed
+            if self._current_d != d_us_per_MHz:
+                self._compiled_processor.set_coefficient(d_us_per_MHz)
+                self._current_d = d_us_per_MHz
+
+            # Split into real/imag for compiled interface
+            x = np.asarray(x, dtype=np.complex64)
+            input_real = np.ascontiguousarray(x.real.astype(np.float32))
+            input_imag = np.ascontiguousarray(x.imag.astype(np.float32))
+
+            out_real, out_imag = self._compiled_processor.apply_dispersion(
+                input_real, input_imag
+            )
+            return (out_real + 1j * out_imag).astype(np.complex64)
+
+        # Fall back to Python/SciPy implementation
         h = self.get_dispersion_filter(d_us_per_MHz)
 
         # Choose convolution mode
@@ -309,6 +352,23 @@ class DispersionModel:
         Returns:
             y: Compressed signal
         """
+        # Use compiled implementation if available
+        if self._compiled_processor is not None and preserve_length:
+            # Update coefficient if changed (use original d, apply_inverse negates internally)
+            if self._current_d != d_us_per_MHz:
+                self._compiled_processor.set_coefficient(d_us_per_MHz)
+                self._current_d = d_us_per_MHz
+
+            # Split into real/imag for compiled interface
+            x = np.asarray(x, dtype=np.complex64)
+            input_real = np.ascontiguousarray(x.real.astype(np.float32))
+            input_imag = np.ascontiguousarray(x.imag.astype(np.float32))
+
+            out_real, out_imag = self._compiled_processor.apply_inverse_dispersion(
+                input_real, input_imag
+            )
+            return (out_real + 1j * out_imag).astype(np.complex64)
+
         return self.apply_dispersion(x, -d_us_per_MHz, preserve_length)
 
     def get_group_delay_curve(self, d_us_per_MHz: float,

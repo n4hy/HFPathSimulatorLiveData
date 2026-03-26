@@ -45,6 +45,8 @@ set(CUDA_SOURCES
     kernels/watterson.cu
     kernels/agc.cu
     kernels/noise.cu
+    kernels/resampler.cu
+    kernels/dispersion.cu
 )
 
 # CPU fallback sources (compiled with OpenMP)
@@ -53,6 +55,8 @@ set(CPU_SOURCES
     kernels/watterson_cpu.cpp
     kernels/agc_cpu.cpp
     kernels/noise_cpu.cpp
+    kernels/resampler_cpu.cpp
+    kernels/dispersion_cpu.cpp
 )
 
 # Find OpenMP for CPU fallback
