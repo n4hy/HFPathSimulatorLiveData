@@ -1692,36 +1692,36 @@ PYTHONPATH=src pytest tests/ -k "test_sec_phi" -v
 ```
 ============================= test session starts ==============================
 platform linux -- Python 3.12.3, pytest-9.0.2
-collected 397 items
+collected 428 items
 
-tests/test_api.py ....                                                    [  1%]
-tests/test_channel_models.py ...................................................[ 14%]
-tests/test_engine.py ........................................             [ 24%]
-tests/test_geomagnetic.py ......................................          [ 34%]
-tests/test_gpu.py ...................................                     [ 43%]
-tests/test_input.py .................                                     [ 47%]
-tests/test_integration.py .....................                           [ 52%]
-tests/test_itu_channels.py ..................................             [ 61%]
+tests/test_api.py ...............................                         [  7%]
+tests/test_channel_models.py ...................................................[ 19%]
+tests/test_engine.py ........................................             [ 28%]
+tests/test_geomagnetic.py ......................................          [ 37%]
+tests/test_gpu.py ...............................                         [ 45%]
+tests/test_input.py .................                                     [ 49%]
+tests/test_integration.py .....................                           [ 54%]
+tests/test_itu_channels.py ..................................             [ 62%]
 tests/test_output.py ............................                         [ 68%]
 tests/test_profiling.py ..........................                        [ 75%]
-tests/test_raytracing.py .....................................            [ 84%]
-tests/test_spectrum.py .........................                          [ 90%]
-tests/test_sporadic_e.py ............................                     [ 97%]
-tests/test_validation.py ................................................ [ 97%]
+tests/test_raytracing.py .....................................            [ 83%]
+tests/test_spectrum.py .........................                          [ 89%]
+tests/test_sporadic_e.py ............................                     [ 96%]
+tests/test_validation.py ................................................ [ 96%]
 tests/test_vogler.py .........................                            [100%]
 
-================== 397 passed, 1 skipped, 1 warning in 7.17s ===================
+======================== 428 passed, 1 warning in 3.97s ========================
 ```
 
 ### Test Summary
 
 | Test File | Tests | Coverage |
 |-----------|-------|----------|
-| `test_api.py` | 4 | REST API endpoints, health checks |
+| `test_api.py` | 31 | REST API endpoints, channel routes, health checks, WebSocket |
 | `test_channel_models.py` | 51 | Watterson, noise, AGC, limiter, impairments, recording |
 | `test_engine.py` | 40 | SimulationEngine, SessionManager, streaming |
 | `test_geomagnetic.py` | 38 | Indices, foF2/hmF2 scaling, storm effects, Kp/Ap conversion |
-| `test_gpu.py` | 35 | Native CUDA, batched FFT, Doppler fading, spectrum, benchmarks |
+| `test_gpu.py` | 31 | Native CUDA, batched FFT, Doppler fading, spectrum, display |
 | `test_input.py` | 17 | File sources, network sources, format conversion |
 | `test_integration.py` | 21 | GNU Radio ZMQ bridge, MATLAB .mat interface, channel snapshots |
 | `test_itu_channels.py` | 34 | CCIR 520, ITU-R F.1289, ITU-R F.1487 standardized channels |
@@ -1732,7 +1732,7 @@ tests/test_vogler.py .........................                            [100%]
 | `test_sporadic_e.py` | 28 | Es config, layer injection, occurrence estimation |
 | `test_validation.py` | 48 | Reference datasets, channel statistics, fading validation |
 | `test_vogler.py` | 25 | Vogler parameters, HFChannel, reflection coefficients |
-| **Total** | **397** | **All passing** |
+| **Total** | **428** | **All passing** |
 
 ### Test Categories
 
