@@ -81,40 +81,65 @@ class IRIModel:
         try:
             import iri2016
 
-            # Run IRI model
-            altitudes = np.arange(alt_min_km, alt_max_km, alt_step_km)
-            iri = iri2016.IRI(time, altitudes, latitude, longitude)
+            # Run IRI model - API expects [alt_min, alt_max, alt_step]
+            iri = iri2016.IRI(time, [alt_min_km, alt_max_km, alt_step_km], latitude, longitude)
 
             # Extract profile
+            altitudes = iri.coords['alt_km'].values
             ne = iri["ne"].values  # Electron density
 
+            # Filter out invalid values (-1 means missing)
+            valid_mask = ne > 0
+            if not np.any(valid_mask):
+                print("IRI returned no valid electron density values")
+                return None
+
+            # Use direct foF2/hmF2 if available, otherwise derive from profile
+            if 'foF2' in iri.data_vars:
+                foF2_arr = iri['foF2'].values
+                foF2 = float(foF2_arr[0]) if foF2_arr.shape else float(foF2_arr)
+            else:
+                foF2 = self._ne_to_freq(ne[valid_mask].max())
+
+            if 'hmF2' in iri.data_vars:
+                hmF2_arr = iri['hmF2'].values
+                hmF2 = float(hmF2_arr[0]) if hmF2_arr.shape else float(hmF2_arr)
+            else:
+                hmF2 = altitudes[np.argmax(ne)]
+
             # Extract characteristics
-            # IRI provides these at specific altitudes
             profile = IRIProfile(
                 altitude_km=altitudes,
                 electron_density=ne,
-                foF2=self._ne_to_freq(ne.max()),  # Approximate
-                hmF2=altitudes[np.argmax(ne)],
+                foF2=foF2,
+                hmF2=hmF2,
             )
 
-            # Find E layer peak (typically 100-120 km)
-            e_mask = (altitudes >= 90) & (altitudes <= 130)
-            if np.any(e_mask):
-                e_ne = ne[e_mask]
-                e_alt = altitudes[e_mask]
-                profile.foE = self._ne_to_freq(e_ne.max())
-                profile.hmE = e_alt[np.argmax(e_ne)]
+            # Helper to extract scalar from xarray
+            def _get_scalar(name):
+                if name in iri.data_vars:
+                    arr = iri[name].values
+                    val = float(arr[0]) if arr.shape else float(arr)
+                    return val if np.isfinite(val) and val > 0 else None
+                return None
 
-            # Find F1 layer (if present, typically 150-200 km daytime)
-            f1_mask = (altitudes >= 140) & (altitudes <= 220)
-            if np.any(f1_mask):
-                f1_ne = ne[f1_mask]
-                f1_alt = altitudes[f1_mask]
-                # Check for local maximum (F1 layer)
-                f1_peak_idx = np.argmax(f1_ne)
-                if 0 < f1_peak_idx < len(f1_ne) - 1:
-                    profile.foF1 = self._ne_to_freq(f1_ne[f1_peak_idx])
-                    profile.hmF1 = f1_alt[f1_peak_idx]
+            # E layer - use direct IRI values if available
+            profile.foE = _get_scalar('foE')
+            profile.hmE = _get_scalar('hmE')
+
+            if profile.foE is None:
+                # Fallback: derive from profile
+                e_mask = (altitudes >= 90) & (altitudes <= 130) & (ne > 0)
+                if np.any(e_mask):
+                    e_ne = ne[e_mask]
+                    e_alt = altitudes[e_mask]
+                    profile.foE = self._ne_to_freq(e_ne.max())
+                    if profile.hmE is None:
+                        profile.hmE = e_alt[np.argmax(e_ne)]
+
+            # F1 layer (if present, typically 150-200 km daytime)
+            profile.foF1 = _get_scalar('foF1')
+            profile.hmF1 = _get_scalar('hmF1')
 
             return profile
 
