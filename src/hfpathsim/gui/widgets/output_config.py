@@ -57,6 +57,30 @@ class OutputConfigWidget(QWidget):
         top_row = QHBoxLayout()
 
         self._enable_check = QCheckBox("Enable Output")
+        self._enable_check.setStyleSheet("""
+            QCheckBox {
+                color: #ffffff;
+                font-weight: bold;
+                padding: 4px 8px;
+                background-color: #2d2d2d;
+                border: 1px solid #555555;
+                border-radius: 4px;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                border: 2px solid #888888;
+                border-radius: 4px;
+                background-color: #3c3c3c;
+            }
+            QCheckBox::indicator:checked {
+                background-color: #4CAF50;
+                border-color: #4CAF50;
+            }
+            QCheckBox::indicator:hover {
+                border-color: #4CAF50;
+            }
+        """)
         self._enable_check.stateChanged.connect(self._on_enable_changed)
         top_row.addWidget(self._enable_check)
 
@@ -239,21 +263,39 @@ class OutputConfigWidget(QWidget):
         layout = QGridLayout(widget)
         layout.setContentsMargins(0, 4, 0, 0)
 
-        # Device
-        layout.addWidget(QLabel("Device:"), 0, 0)
+        # Device - prominent selection
+        device_label = QLabel("Audio Device:")
+        device_label.setStyleSheet("font-weight: bold; color: #ffffff;")
+        layout.addWidget(device_label, 0, 0)
+
         self._audio_device = QComboBox()
-        self._audio_device.addItem("(Default)")
-        layout.addWidget(self._audio_device, 0, 1)
+        self._audio_device.setMinimumWidth(300)
+        self._audio_device.setStyleSheet("""
+            QComboBox {
+                padding: 6px;
+                font-size: 12px;
+                background-color: #3c3c3c;
+                border: 2px solid #0e639c;
+                border-radius: 4px;
+            }
+            QComboBox:hover {
+                border-color: #4CAF50;
+            }
+            QComboBox::drop-down {
+                width: 30px;
+            }
+        """)
+        layout.addWidget(self._audio_device, 0, 1, 1, 2)
 
         self._audio_scan_btn = QPushButton("Refresh")
         self._audio_scan_btn.clicked.connect(self._scan_audio_devices)
-        layout.addWidget(self._audio_scan_btn, 0, 2)
+        layout.addWidget(self._audio_scan_btn, 0, 3)
 
         # Sample rate
         layout.addWidget(QLabel("Sample Rate:"), 1, 0)
         self._audio_rate = QComboBox()
-        self._audio_rate.addItems(["44100 Hz", "48000 Hz", "96000 Hz", "192000 Hz"])
-        self._audio_rate.setCurrentText("48000 Hz")
+        self._audio_rate.addItems(["8000 Hz", "11025 Hz", "16000 Hz", "22050 Hz", "44100 Hz", "48000 Hz", "96000 Hz", "192000 Hz"])
+        self._audio_rate.setCurrentText("8000 Hz")  # Default to match signal generator
         layout.addWidget(self._audio_rate, 1, 1)
 
         # Latency
@@ -261,9 +303,6 @@ class OutputConfigWidget(QWidget):
         self._audio_latency = QComboBox()
         self._audio_latency.addItems(["Low", "High"])
         layout.addWidget(self._audio_latency, 1, 3)
-
-        # Scan for devices on first show
-        self._scan_audio_devices()
 
         return widget
 
@@ -341,6 +380,10 @@ class OutputConfigWidget(QWidget):
         index = {"Network": 0, "File": 1, "Audio": 2, "SDR": 3}.get(type_name, 0)
         self._stack.setCurrentIndex(index)
 
+        # Auto-scan audio devices when Audio is selected
+        if type_name == "Audio":
+            self._scan_audio_devices()
+
     def _on_enable_changed(self, state):
         """Handle enable checkbox change."""
         self._enabled = state == Qt.CheckState.Checked.value
@@ -417,6 +460,10 @@ class OutputConfigWidget(QWidget):
         device = self._audio_device.currentData()
 
         rate_map = {
+            "8000 Hz": 8000,
+            "11025 Hz": 11025,
+            "16000 Hz": 16000,
+            "22050 Hz": 22050,
             "44100 Hz": 44100,
             "48000 Hz": 48000,
             "96000 Hz": 96000,

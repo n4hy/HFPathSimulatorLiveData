@@ -24,6 +24,7 @@ from hfpathsim.input.base import InputSource, InputFormat
 from hfpathsim.input.file import FileInputSource
 from hfpathsim.input.network import NetworkInputSource, NetworkProtocol
 from hfpathsim.input.flexradio import FlexRadioInputSource
+from hfpathsim.input.siggen import SignalGenerator, WaveformType
 
 
 class InputConfigWidget(QWidget):
@@ -53,7 +54,7 @@ class InputConfigWidget(QWidget):
         type_row.addWidget(QLabel("Type:"))
 
         self._type_combo = QComboBox()
-        self._type_combo.addItems(["File", "Network", "SDR", "Flex Radio"])
+        self._type_combo.addItems(["File", "Network", "SDR", "Flex Radio", "Signal Generator"])
         self._type_combo.currentTextChanged.connect(self._on_type_changed)
         type_row.addWidget(self._type_combo)
 
@@ -90,6 +91,10 @@ class InputConfigWidget(QWidget):
         # Flex Radio config
         self._flex_widget = self._create_flex_config()
         self._stack.addWidget(self._flex_widget)
+
+        # Signal Generator config
+        self._siggen_widget = self._create_siggen_config()
+        self._stack.addWidget(self._siggen_widget)
 
         layout.addWidget(group)
 
@@ -273,6 +278,47 @@ class InputConfigWidget(QWidget):
 
         return widget
 
+    def _create_siggen_config(self) -> QWidget:
+        """Create signal generator configuration panel."""
+        widget = QWidget()
+        layout = QGridLayout(widget)
+        layout.setContentsMargins(0, 4, 0, 0)
+
+        # Waveform type
+        layout.addWidget(QLabel("Waveform:"), 0, 0)
+        self._siggen_waveform = QComboBox()
+        self._siggen_waveform.addItems(["RTTY", "SSB Voice", "PSK31"])
+        layout.addWidget(self._siggen_waveform, 0, 1)
+
+        # Sample rate
+        layout.addWidget(QLabel("Sample Rate:"), 0, 2)
+        self._siggen_rate = QDoubleSpinBox()
+        self._siggen_rate.setRange(1.0, 96.0)
+        self._siggen_rate.setValue(8.0)
+        self._siggen_rate.setSuffix(" kHz")
+        self._siggen_rate.setDecimals(1)
+        layout.addWidget(self._siggen_rate, 0, 3)
+
+        # Center frequency
+        layout.addWidget(QLabel("Center Freq:"), 1, 0)
+        self._siggen_freq = QDoubleSpinBox()
+        self._siggen_freq.setRange(100.0, 5000.0)
+        self._siggen_freq.setValue(1500.0)
+        self._siggen_freq.setSuffix(" Hz")
+        self._siggen_freq.setDecimals(1)
+        layout.addWidget(self._siggen_freq, 1, 1)
+
+        # Duration
+        layout.addWidget(QLabel("Duration:"), 1, 2)
+        self._siggen_duration = QDoubleSpinBox()
+        self._siggen_duration.setRange(10.0, 300.0)
+        self._siggen_duration.setValue(60.0)
+        self._siggen_duration.setSuffix(" sec")
+        self._siggen_duration.setDecimals(0)
+        layout.addWidget(self._siggen_duration, 1, 3)
+
+        return widget
+
     def _discover_flex(self):
         """Discover Flex Radio devices on the network."""
         self._flex_radio_combo.clear()
@@ -330,7 +376,7 @@ class InputConfigWidget(QWidget):
 
     def _on_type_changed(self, type_name: str):
         """Handle source type change."""
-        index = {"File": 0, "Network": 1, "SDR": 2, "Flex Radio": 3}.get(type_name, 0)
+        index = {"File": 0, "Network": 1, "SDR": 2, "Flex Radio": 3, "Signal Generator": 4}.get(type_name, 0)
         self._stack.setCurrentIndex(index)
 
     def _browse_file(self):
@@ -408,6 +454,25 @@ class InputConfigWidget(QWidget):
             self._sdr_device.clear()
             self._sdr_device.addItem("(SoapySDR not installed)")
 
+    def _create_siggen_source(self) -> Optional[InputSource]:
+        """Create signal generator source from current settings."""
+        waveform_map = {
+            "RTTY": WaveformType.RTTY,
+            "SSB Voice": WaveformType.SSB_VOICE,
+            "PSK31": WaveformType.PSK31,
+        }
+
+        waveform = waveform_map.get(self._siggen_waveform.currentText(), WaveformType.RTTY)
+
+        source = SignalGenerator(
+            waveform=waveform,
+            sample_rate_hz=self._siggen_rate.value() * 1000.0,  # kHz to Hz
+            center_freq_hz=self._siggen_freq.value(),
+            duration_sec=self._siggen_duration.value(),
+        )
+
+        return source
+
     def _on_start(self):
         """Handle start button click."""
         # Create source based on current type
@@ -421,6 +486,8 @@ class InputConfigWidget(QWidget):
             self._current_source = self._create_flex_source()
             if hasattr(self, '_flex_status'):
                 self._flex_status.setText("Connecting...")
+        elif source_type == "Signal Generator":
+            self._current_source = self._create_siggen_source()
         else:
             # SDR would go here
             pass

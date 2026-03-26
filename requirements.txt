@@ -1,0 +1,45 @@
+# HF Path Simulator - Requirements
+# Install with: pip install -r requirements.txt
+# Or for full install: pip install -e ".[all]"
+
+# Core dependencies (required)
+numpy>=1.26
+scipy>=1.12
+pyzmq>=25.0
+
+# GUI dependencies (desktop application)
+PyQt6>=6.6
+pyqtgraph>=0.13
+
+# Audio output
+sounddevice>=0.4.0
+
+# Optional: GPU acceleration (requires CUDA 12.x)
+# cupy-cuda12x>=13.0
+# pybind11>=2.12
+
+# Optional: REST API server
+# fastapi>=0.109
+# uvicorn[standard]>=0.27
+# websockets>=12.0
+# pydantic>=2.0
+
+# Optional: SDR hardware support
+# soapysdr
+
+# Optional: IRI-2016 ionospheric model
+# iri2016
+
+# Development dependencies (testing)
+pytest>=7.0
+pytest-qt>=4.2
+pytest-asyncio>=0.21
+httpx>=0.25
+ruff>=0.1
+mypy>=1.5
+pre-commit>=3.0
+
+# Documentation
+# mkdocs>=1.5
+# mkdocs-material>=9.0
+# mkdocstrings[python]>=0.24

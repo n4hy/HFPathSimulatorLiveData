@@ -1,7 +1,9 @@
-"""Audio output sink for HF Path Simulator."""
+"""Audio output sink for HF Path Simulator.
 
-import threading
-from collections import deque
+Lock-free single-producer single-consumer ring buffer design.
+Buffer is sized large enough to never overflow under normal use.
+"""
+
 from typing import Optional, List, Dict, Any
 import numpy as np
 
@@ -11,8 +13,11 @@ from .base import OutputSink, OutputFormat
 class AudioOutputSink(OutputSink):
     """Output sink to sound card via sounddevice.
 
-    Outputs I/Q samples as stereo audio (I=left, Q=right).
-    Useful for SDR applications and audio processing.
+    Uses a lock-free SPSC ring buffer:
+    - Main thread is the single producer (writer)
+    - Audio callback is the single consumer (reader)
+    - No locks needed - pointers are updated atomically by single owner
+    - Buffer sized large enough to never overflow
     """
 
     def __init__(
@@ -20,20 +25,10 @@ class AudioOutputSink(OutputSink):
         device: Optional[int] = None,
         sample_rate_hz: float = 48000.0,
         output_format: OutputFormat = OutputFormat.FLOAT32_IQ,
-        buffer_size: int = 8192,
-        blocksize: int = 1024,
-        latency: str = "low",
+        buffer_size: int = 1048576,  # 1M samples = 131 seconds at 8kHz
+        blocksize: int = 256,
+        latency: str = "high",
     ):
-        """Initialize audio output sink.
-
-        Args:
-            device: Audio device index (None for default)
-            sample_rate_hz: Sample rate in Hz
-            output_format: Output format (FLOAT32_IQ recommended for audio)
-            buffer_size: Internal buffer size in samples
-            blocksize: Audio block size
-            latency: Latency setting ('low', 'high', or seconds)
-        """
         super().__init__(sample_rate_hz, 0.0, output_format, buffer_size)
 
         self._device = device
@@ -42,35 +37,48 @@ class AudioOutputSink(OutputSink):
 
         # Audio stream
         self._stream = None
-        self._sd = None  # sounddevice module
+        self._sd = None
 
-        # Buffer
-        self._buffer: deque = deque(maxlen=buffer_size)
-        self._lock = threading.Lock()
+        # Lock-free SPSC ring buffer
+        # Buffer is pre-allocated, never reallocated
+        self._buffer = np.zeros(buffer_size, dtype=np.complex64)
 
-        # Underrun tracking
+        # Single writer updates write_ptr only
+        # Single reader updates read_ptr only
+        # Both can read both pointers to compute available/space
+        self._write_ptr = 0
+        self._read_ptr = 0
+
+        # Stats
         self._underruns = 0
+        self._output_gain = 0.5
+
+    def _available_to_read(self) -> int:
+        """Samples available for reading (called by reader)."""
+        wp = self._write_ptr
+        rp = self._read_ptr
+        if wp >= rp:
+            return wp - rp
+        else:
+            return self._buffer_size - rp + wp
+
+    def _available_to_write(self) -> int:
+        """Space available for writing (called by writer)."""
+        # Leave one slot empty to distinguish full from empty
+        return self._buffer_size - 1 - self._available_to_read()
 
     @property
     def device(self) -> Optional[int]:
-        """Return audio device index."""
         return self._device
 
     @property
     def underruns(self) -> int:
-        """Return number of buffer underruns."""
         return self._underruns
 
     @classmethod
     def list_devices(cls) -> List[Dict[str, Any]]:
-        """List available audio output devices.
-
-        Returns:
-            List of device dictionaries
-        """
         try:
             import sounddevice as sd
-
             devices = []
             for i, dev in enumerate(sd.query_devices()):
                 if dev["max_output_channels"] >= 2:
@@ -82,22 +90,24 @@ class AudioOutputSink(OutputSink):
                         "hostapi": sd.query_hostapis(dev["hostapi"])["name"],
                     })
             return devices
-
         except ImportError:
-            print("sounddevice not installed. Install with: pip install sounddevice")
             return []
 
     def open(self) -> bool:
-        """Open audio output stream."""
         try:
             import sounddevice as sd
             self._sd = sd
 
-            # Create output stream
+            # Reset buffer and pointers
+            self._buffer.fill(0)
+            self._write_ptr = 0
+            self._read_ptr = 0
+            self._underruns = 0
+
             self._stream = sd.OutputStream(
                 device=self._device,
                 samplerate=self._sample_rate,
-                channels=2,  # Stereo I/Q
+                channels=2,
                 dtype="float32",
                 blocksize=self._blocksize,
                 latency=self._latency,
@@ -109,107 +119,140 @@ class AudioOutputSink(OutputSink):
             return True
 
         except ImportError:
-            print("sounddevice not installed. Install with: pip install sounddevice")
+            print("sounddevice not installed")
             return False
-
         except Exception as e:
-            print(f"Error opening audio output: {e}")
+            print(f"Error opening audio: {e}")
             return False
 
     def _audio_callback(self, outdata, frames, time_info, status):
-        """Sounddevice callback to fill audio buffer."""
-        if status:
-            if status.output_underflow:
-                self._underruns += 1
+        """Audio callback - single reader, no locks."""
+        if status and status.output_underflow:
+            self._underruns += 1
 
-        with self._lock:
-            available = len(self._buffer)
-            to_read = min(frames, available)
+        available = self._available_to_read()
+        to_read = min(frames, available)
 
-            if to_read > 0:
-                samples = np.array(
-                    [self._buffer.popleft() for _ in range(to_read)],
-                    dtype=np.complex64,
-                )
+        if to_read > 0:
+            rp = self._read_ptr
 
-                # Convert to stereo float32 (I=left, Q=right)
-                outdata[:to_read, 0] = np.real(samples).astype(np.float32)
-                outdata[:to_read, 1] = np.imag(samples).astype(np.float32)
+            # Read from ring buffer
+            end = rp + to_read
+            if end <= self._buffer_size:
+                # Contiguous read
+                samples = self._buffer[rp:end]
+            else:
+                # Wrap-around read
+                first = self._buffer_size - rp
+                samples = np.concatenate([
+                    self._buffer[rp:],
+                    self._buffer[:to_read - first]
+                ])
 
-            # Zero-fill any remaining frames
-            if to_read < frames:
-                outdata[to_read:] = 0
+            # Update read pointer (only reader touches this)
+            self._read_ptr = end % self._buffer_size
+
+            # Output as stereo float32
+            outdata[:to_read, 0] = np.real(samples).astype(np.float32)
+            outdata[:to_read, 1] = np.imag(samples).astype(np.float32)
+
+        # Zero-fill remainder if underrun
+        if to_read < frames:
+            outdata[to_read:] = 0
 
     def close(self):
-        """Close audio stream."""
         if self._stream:
             self._stream.stop()
             self._stream.close()
             self._stream = None
-
         self._is_open = False
 
+    def clear(self):
+        """Clear the ring buffer immediately (flush all pending audio)."""
+        self._buffer.fill(0)
+        self._write_ptr = 0
+        self._read_ptr = 0
+
     def write(self, samples: np.ndarray) -> int:
-        """Write samples to audio buffer."""
+        """Write samples to ring buffer - single writer, no locks.
+
+        Write pointer NEVER advances to meet or pass read pointer.
+        If buffer is full, samples are dropped (not written).
+        """
         if not self._is_open:
             return 0
 
-        samples = samples.astype(np.complex64)
+        samples = (samples * self._output_gain).astype(np.complex64)
 
-        # Normalize to [-1, 1] range for audio
-        max_val = np.max(np.abs(samples))
-        if max_val > 1.0:
-            samples = samples / max_val
+        # Simple hard clip to prevent overflow (no fancy soft clipping for now)
+        mag = np.abs(samples)
+        mask = mag > 1.0
+        if np.any(mask):
+            samples[mask] = samples[mask] / mag[mask]
 
-        with self._lock:
-            space = self._buffer_size - len(self._buffer)
-            to_write = min(len(samples), space)
+        n = len(samples)
 
-            if to_write > 0:
-                self._buffer.extend(samples[:to_write])
-                self._total_samples_written += to_write
+        # Snapshot read pointer (reader can only advance it, making more space)
+        rp = self._read_ptr
+        wp = self._write_ptr
 
+        # Calculate space WITHOUT allowing write to catch read
+        # Keep at least 1 sample gap
+        if wp >= rp:
+            # Write ahead of read: can write to end, then from start to read-1
+            space = (self._buffer_size - wp) + (rp - 1) if rp > 0 else (self._buffer_size - wp - 1)
+        else:
+            # Read ahead of write: can only write up to read-1
+            space = rp - wp - 1
+
+        space = max(0, space)
+        to_write = min(n, space)
+
+        if to_write == 0:
+            return 0
+
+        # Write to ring buffer
+        end = wp + to_write
+        if end <= self._buffer_size:
+            # Contiguous write
+            self._buffer[wp:end] = samples[:to_write]
+        else:
+            # Wrap-around write
+            first = self._buffer_size - wp
+            self._buffer[wp:] = samples[:first]
+            self._buffer[:to_write - first] = samples[first:to_write]
+
+        # Update write pointer (only writer touches this)
+        self._write_ptr = end % self._buffer_size
+
+        self._total_samples_written += to_write
         return to_write
 
     def available(self) -> int:
-        """Return samples that can be written without blocking."""
-        with self._lock:
-            return self._buffer_size - len(self._buffer)
+        """Space available for writing."""
+        return self._available_to_write()
 
     @property
     def buffer_fill(self) -> float:
-        """Return buffer fill percentage."""
-        with self._lock:
-            return len(self._buffer) / self._buffer_size * 100
+        """Buffer fill percentage."""
+        used = self._available_to_read()
+        return (used / self._buffer_size) * 100
 
     @property
     def latency_seconds(self) -> float:
-        """Return current output latency in seconds."""
         if self._stream and hasattr(self._stream, "latency"):
             return self._stream.latency
         return 0.0
 
     def get_device_info(self) -> Dict[str, Any]:
-        """Get information about current audio device.
-
-        Returns:
-            Device information dictionary
-        """
         if self._sd is None:
             return {}
-
         try:
-            if self._device is not None:
-                dev = self._sd.query_devices(self._device)
-            else:
-                dev = self._sd.query_devices(kind="output")
-
+            dev = self._sd.query_devices(self._device if self._device else "output")
             return {
                 "name": dev["name"],
                 "channels": dev["max_output_channels"],
                 "default_samplerate": dev["default_samplerate"],
-                "hostapi": self._sd.query_hostapis(dev["hostapi"])["name"],
             }
-
-        except Exception:
+        except:
             return {}
