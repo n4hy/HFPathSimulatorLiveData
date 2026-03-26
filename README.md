@@ -172,6 +172,8 @@ The simulator implements the Vogler-Hoffmeyer reflection coefficient model from 
 - Batched overlap-save convolution using `cufftPlanMany` (68.9 Msps throughput)
 - GPU-accelerated Doppler fading generation with cuRAND
 - Real-time spectrum computation for GUI
+- **DisplayProcessor**: Optimized GUI computations (dB conversion, FFT shift, smoothing, peak hold)
+- VH RF Chain with CPU fallback for systems without GPU
 - CuPy fallback with automatic kernel compilation
 - NumPy CPU fallback for compatibility
 - Designed for RTX 5090 (Blackwell), supports sm_80-90 architectures
@@ -831,6 +833,34 @@ proc.configure_taps(
 # Process through full RF chain
 output = proc.process(input_signal)
 print(f"Using GPU: {proc.is_using_gpu()}")
+
+# DisplayProcessor for GUI computations (auto-selects GPU/CPU)
+from hfpathsim.gpu import DisplayProcessor
+
+disp = DisplayProcessor(max_spectrum_size=4096)
+print(f"Display using GPU: {disp.is_using_gpu()}")
+
+# Fast dB conversion for spectrum display
+magnitude = np.abs(np.fft.fft(input_signal[:4096]))
+spectrum_db = disp.magnitude_to_db(magnitude.astype(np.float32))
+
+# FFT shift for centered spectrum display
+spectrum_shifted = disp.fftshift(spectrum_db)
+
+# Moving average smoothing
+spectrum_smooth = disp.moving_average(spectrum_shifted, window_size=5)
+
+# Peak hold with decay for waterfall display
+peak_buffer = np.full(4096, -120.0, dtype=np.float32)
+disp.peak_hold(spectrum_smooth, peak_buffer, decay_rate=0.5)
+
+# Exponential smoothing for smooth updates
+smoothed = np.zeros(4096, dtype=np.float32)
+disp.exponential_smooth(spectrum_smooth, smoothed, alpha=0.3)
+
+# Normalize scattering function for 2D display
+S = np.random.rand(64, 64).astype(np.float32)
+S_normalized = disp.normalize_scattering(S.flatten(), rows=64, cols=64, min_clip_db=-60.0)
 ```
 
 ### Profiling and Benchmarking
@@ -1419,7 +1449,19 @@ HFPathSimulatorLiveData/
 │   │       ├── fading.cu
 │   │       ├── signal_proc.cu
 │   │       ├── vh_rf_chain.cu     # VH RF chain GPU implementation
-│   │       └── vh_rf_chain_cpu.cpp # VH RF chain CPU fallback
+│   │       ├── vh_rf_chain_cpu.cpp # VH RF chain CPU fallback
+│   │       ├── watterson.cu       # Watterson channel GPU
+│   │       ├── watterson_cpu.cpp  # Watterson CPU fallback
+│   │       ├── agc.cu             # AGC GPU implementation
+│   │       ├── agc_cpu.cpp        # AGC CPU fallback
+│   │       ├── noise.cu           # Noise generator GPU
+│   │       ├── noise_cpu.cpp      # Noise CPU fallback
+│   │       ├── resampler.cu       # Polyphase resampler GPU
+│   │       ├── resampler_cpu.cpp  # Resampler CPU fallback
+│   │       ├── dispersion.cu      # Ionospheric dispersion GPU
+│   │       ├── dispersion_cpu.cpp # Dispersion CPU fallback
+│   │       ├── display.cu         # GUI display computations GPU
+│   │       └── display_cpu.cpp    # Display CPU fallback (OpenMP)
 │   │
 │   ├── input/                     # Input sources
 │   │   ├── base.py                # InputSource ABC, InputFormat
@@ -1745,6 +1787,9 @@ tests/test_vogler.py .........................                            [100%]
 | Single-block overlap-save | ~0.2 ms / 4096 samples | Non-batched processing |
 | Doppler fading generation | 0.39 ms / 4096 samples | cuRAND + cuFFT |
 | Spectrum computation | ~2.6 ms / 65k samples | GPU compute_spectrum_db |
+| DisplayProcessor dB conversion | <0.1 ms / 4096 pts | magnitude_to_db, power_to_db |
+| DisplayProcessor smoothing | <0.1 ms / 4096 pts | moving_average, peak_hold |
+| Scattering normalization | <0.5 ms / 64x64 grid | 2D dB + normalize to [0,1] |
 | Scattering function | ~1 ms / 64x32 grid | 2D power distribution |
 | Ray tracing (single ray) | <10 ms | CPU Haselgrove integration |
 | Mode discovery (3 hops) | <100 ms | CPU path finder |
