@@ -808,6 +808,29 @@ fading = generate_doppler_fading(
 
 # Fast spectrum computation for real-time GUI
 power_db = compute_spectrum_db(input_signal[:4096], reference=1.0)
+
+# VH RF Chain processor (GPU-accelerated with CPU fallback)
+from hfpathsim.gpu import VHRFChainProcessor
+
+proc = VHRFChainProcessor(
+    input_rate=8000,           # Baseband sample rate
+    rf_rate=1000000,           # RF processing rate (125x upsample)
+    max_input_samples=4096,
+    carrier_freq_hz=10000.0,   # RF carrier frequency
+    coherence_time_sec=0.5,    # AR(1) fading coherence time
+    k_factor=0.0,              # Rician K-factor (0 = Rayleigh)
+)
+
+# Configure tapped delay line
+proc.configure_taps(
+    delays=[0, 10, 25],           # Delay in RF samples
+    amplitudes=[1.0, 0.7, 0.3],   # Tap amplitudes
+    doppler_hz=[0.0, 0.5, -0.3],  # Doppler shift per tap
+)
+
+# Process through full RF chain
+output = proc.process(input_signal)
+print(f"Using GPU: {proc.is_using_gpu()}")
 ```
 
 ### Profiling and Benchmarking
@@ -1394,7 +1417,9 @@ HFPathSimulatorLiveData/
 │   │   └── kernels/
 │   │       ├── vogler_transfer.cu
 │   │       ├── fading.cu
-│   │       └── signal_proc.cu
+│   │       ├── signal_proc.cu
+│   │       ├── vh_rf_chain.cu     # VH RF chain GPU implementation
+│   │       └── vh_rf_chain_cpu.cpp # VH RF chain CPU fallback
 │   │
 │   ├── input/                     # Input sources
 │   │   ├── base.py                # InputSource ABC, InputFormat
