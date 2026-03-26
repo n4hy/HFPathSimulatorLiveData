@@ -15,6 +15,7 @@
 #include <cufft.h>
 #include <curand_kernel.h>
 #include <math.h>
+#include <cstdio>
 
 #define PI 3.14159265358979323846f
 
@@ -466,40 +467,45 @@ int process_overlap_save(
     delete[] input_temp;
 
     int threads = 256;
-    int blocks = (block_size + threads - 1) / threads;
+    int grid_blocks = (block_size + threads - 1) / threads;
+    if (grid_blocks < 1) grid_blocks = 1;
     float scale = 1.0f / block_size;
 
     // Process blocks
     for (int b = 0; b < n_blocks; b++) {
         int input_offset = b * output_size;
 
-        // Prepare input block
-        prepare_input_block<<<blocks, threads>>>(
-            input_dev, state->input_block,
-            input_offset, input_len,
-            block_size, overlap
+        // Prepare input block with overlap
+        prepare_input_block<<<grid_blocks, threads>>>(
+            input_dev, state->input_block, input_offset, input_len, block_size, overlap
         );
+        cudaDeviceSynchronize();
 
         // Forward FFT
         cufftExecC2C(state->fft_plan, state->input_block, state->X_freq, CUFFT_FORWARD);
+        cudaDeviceSynchronize();
 
-        // Multiply by transfer function
-        complex_multiply<<<blocks, threads>>>(
+        // Complex multiply with transfer function
+        complex_multiply<<<grid_blocks, threads>>>(
             state->X_freq, state->H_freq, state->Y_freq, block_size
         );
+        cudaDeviceSynchronize();
 
         // Inverse FFT
         cufftExecC2C(state->ifft_plan, state->Y_freq, state->output_block, CUFFT_INVERSE);
+        cudaDeviceSynchronize();
 
         // Scale IFFT output
-        scale_ifft_output<<<blocks, threads>>>(state->output_block, scale, block_size);
+        scale_ifft_output<<<grid_blocks, threads>>>(
+            state->output_block, scale, block_size
+        );
+        cudaDeviceSynchronize();
 
         // Extract valid output
-        int out_blocks = (output_size + threads - 1) / threads;
-        extract_output_block<<<out_blocks, threads>>>(
-            state->output_block, output_dev,
-            b * output_size, overlap, output_size
+        extract_output_block<<<grid_blocks, threads>>>(
+            state->output_block, output_dev, b * output_size, overlap, output_size
         );
+        cudaDeviceSynchronize();
     }
 
     // Copy output back

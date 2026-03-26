@@ -347,8 +347,10 @@ py::array_t<std::complex<float>> vogler_transfer_function(
         throw std::runtime_error("CUDA kernel execution failed");
     }
 
-    // Create output array
-    py::array_t<std::complex<float>> result(N);
+    // Create output array with proper strides
+    std::vector<ssize_t> shape = {N};
+    std::vector<ssize_t> strides = {sizeof(std::complex<float>)};
+    py::array_t<std::complex<float>> result(shape, strides);
     py::buffer_info result_buf = result.request();
     std::complex<float>* result_ptr = static_cast<std::complex<float>*>(result_buf.ptr);
 
@@ -419,7 +421,10 @@ public:
             throw std::runtime_error("Overlap-save processing failed");
         }
 
-        py::array_t<std::complex<float>> result(N);
+        // Create array with proper shape and strides
+        std::vector<ssize_t> shape = {N};
+        std::vector<ssize_t> strides = {sizeof(std::complex<float>)};
+        py::array_t<std::complex<float>> result(shape, strides);
         py::buffer_info result_buf = result.request();
         std::complex<float>* result_ptr = static_cast<std::complex<float>*>(result_buf.ptr);
 
@@ -510,7 +515,10 @@ public:
             throw std::runtime_error("Batched overlap-save processing failed");
         }
 
-        py::array_t<std::complex<float>> result(N);
+        // Create array with proper strides
+        std::vector<ssize_t> shape = {N};
+        std::vector<ssize_t> strides = {sizeof(std::complex<float>)};
+        py::array_t<std::complex<float>> result(shape, strides);
         py::buffer_info result_buf = result.request();
         std::complex<float>* result_ptr = static_cast<std::complex<float>*>(result_buf.ptr);
 
@@ -564,7 +572,10 @@ public:
             throw std::runtime_error("Doppler fading generation failed");
         }
 
-        py::array_t<std::complex<float>> result(n_samples_);
+        // Create array with proper strides
+        std::vector<ssize_t> shape = {n_samples_};
+        std::vector<ssize_t> strides = {sizeof(std::complex<float>)};
+        py::array_t<std::complex<float>> result(shape, strides);
         py::buffer_info result_buf = result.request();
         std::complex<float>* result_ptr = static_cast<std::complex<float>*>(result_buf.ptr);
 
@@ -602,7 +613,10 @@ py::array_t<std::complex<float>> generate_doppler_fading(
         throw std::runtime_error("Doppler fading generation failed");
     }
 
-    py::array_t<std::complex<float>> result(n_samples);
+    // Create array with proper strides
+    std::vector<ssize_t> shape = {n_samples};
+    std::vector<ssize_t> strides = {sizeof(std::complex<float>)};
+    py::array_t<std::complex<float>> result(shape, strides);
     py::buffer_info result_buf = result.request();
     std::complex<float>* result_ptr = static_cast<std::complex<float>*>(result_buf.ptr);
 
