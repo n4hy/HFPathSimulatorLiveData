@@ -41,7 +41,16 @@ set(CUDA_SOURCES
     kernels/vogler_transfer.cu
     kernels/fading.cu
     kernels/signal_proc.cu
+    kernels/vh_rf_chain.cu
 )
+
+# CPU fallback sources (compiled with OpenMP)
+set(CPU_SOURCES
+    kernels/vh_rf_chain_cpu.cpp
+)
+
+# Find OpenMP for CPU fallback
+find_package(OpenMP)
 
 # Create CUDA library
 add_library(hfpathsim_cuda STATIC ${CUDA_SOURCES})
@@ -59,14 +68,35 @@ set_target_properties(hfpathsim_cuda PROPERTIES
     POSITION_INDEPENDENT_CODE ON
 )
 
+# Create CPU fallback library (with OpenMP and SIMD optimizations)
+add_library(hfpathsim_cpu STATIC ${CPU_SOURCES})
+target_include_directories(hfpathsim_cpu PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_compile_options(hfpathsim_cpu PRIVATE
+    -O3
+    -march=native
+    -ffast-math
+)
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(hfpathsim_cpu PUBLIC OpenMP::OpenMP_CXX)
+endif()
+set_target_properties(hfpathsim_cpu PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+)
+
 # Create pybind11 module
 pybind11_add_module(_hfpathsim_gpu bindings.cpp)
 target_link_libraries(_hfpathsim_gpu PRIVATE
     hfpathsim_cuda
+    hfpathsim_cpu
     CUDA::cudart
     CUDA::cufft
     CUDA::curand
 )
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(_hfpathsim_gpu PRIVATE OpenMP::OpenMP_CXX)
+endif()
 
 # Install the module
 install(TARGETS _hfpathsim_gpu

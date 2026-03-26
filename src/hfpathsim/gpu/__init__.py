@@ -29,8 +29,11 @@ try:
     from . import _hfpathsim_gpu
 
     _gpu_module = _hfpathsim_gpu
+    # Export VH RF Chain processor class
+    VHRFChainProcessor = _hfpathsim_gpu.VHRFChainProcessor
 except ImportError:
-    pass
+    _gpu_module = None
+    VHRFChainProcessor = None
 
 # Fall back to CuPy
 if _gpu_module is None:

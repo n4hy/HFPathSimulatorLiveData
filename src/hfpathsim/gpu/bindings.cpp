@@ -12,6 +12,7 @@
 #include <pybind11/stl.h>
 #include <string>
 #include <map>
+#include <complex>
 
 namespace py = pybind11;
 
@@ -72,6 +73,42 @@ extern "C" {
     // Spectrum computation
     int compute_spectrum_gpu(const float* signal_real, const float* signal_imag,
                              int N, float* power_db, float reference);
+
+    // VH RF Chain - GPU implementation
+    void* init_vh_rf_chain(int input_rate, int rf_rate, int max_input_samples,
+                           float carrier_freq_hz, float coherence_time_sec,
+                           float k_factor, unsigned long seed);
+    int configure_vh_taps(void* state_ptr, const int* delays, const float* amplitudes,
+                          const float* doppler_hz, int n_taps);
+    int process_vh_rf_chain(void* state_ptr,
+                            const float* input_real, const float* input_imag, int n_samples,
+                            float* output_real, float* output_imag);
+    void free_vh_rf_chain(void* state_ptr);
+    void reset_vh_rf_chain(void* state_ptr);
+
+    // VH RF Chain - CPU implementation (fallback)
+    void* init_vh_rf_chain_cpu(int input_rate, int rf_rate, int max_input_samples,
+                               float carrier_freq_hz, float coherence_time_sec,
+                               float k_factor, unsigned long seed);
+    int configure_vh_taps_cpu(void* state_ptr, const int* delays, const float* amplitudes,
+                              const float* doppler_hz, int n_taps);
+    int process_vh_rf_chain_cpu(void* state_ptr,
+                                const float* input_real, const float* input_imag, int n_samples,
+                                float* output_real, float* output_imag);
+    void free_vh_rf_chain_cpu(void* state_ptr);
+    void reset_vh_rf_chain_cpu(void* state_ptr);
+
+    // Debug functions for GPU VH RF chain
+    float debug_test_upsample(void* state_ptr, const float* input_real, const float* input_imag, int n_samples);
+    float debug_test_resample_roundtrip(void* state_ptr, const float* input_real, const float* input_imag, int n_samples);
+    int debug_get_filter(void* state_ptr, float* filter_out, int max_len);
+    float debug_test_mixer_roundtrip(void* state_ptr, const float* input_real, const float* input_imag, int n_samples);
+    float debug_test_tdl_unity(void* state_ptr, const float* input_real, const float* input_imag, int n_samples);
+    void debug_get_fading_stats(void* state_ptr, int n_samples, float* mean_mag, float* mean_magsq);
+    float debug_test_tdl_constant_fading(void* state_ptr, const float* input_real, const float* input_imag,
+                                         int n_samples, float fading_re, float fading_im);
+    void debug_power_stages(void* state_ptr, const float* input_real, const float* input_imag,
+                            int n_samples, float* powers_out);
 }
 
 /**
@@ -417,6 +454,153 @@ py::array_t<std::complex<float>> apply_channel_batched(
 }
 
 /**
+ * VH RF Chain processor wrapper class.
+ *
+ * Automatically selects GPU or CPU implementation based on availability.
+ */
+class VHRFChainProcessor {
+public:
+    VHRFChainProcessor(
+        int input_rate,
+        int rf_rate,
+        int max_input_samples,
+        float carrier_freq_hz,
+        float coherence_time_sec,
+        float k_factor = 0.0f,
+        unsigned long seed = 42
+    ) : input_rate_(input_rate), rf_rate_(rf_rate),
+        max_input_samples_(max_input_samples),
+        use_gpu_(false), state_(nullptr)
+    {
+        // Try GPU first
+        state_ = init_vh_rf_chain(input_rate, rf_rate, max_input_samples,
+                                  carrier_freq_hz, coherence_time_sec, k_factor, seed);
+        if (state_) {
+            use_gpu_ = true;
+        } else {
+            // Fall back to CPU
+            state_ = init_vh_rf_chain_cpu(input_rate, rf_rate, max_input_samples,
+                                          carrier_freq_hz, coherence_time_sec, k_factor, seed);
+            if (!state_) {
+                throw std::runtime_error("Failed to initialize VH RF Chain processor");
+            }
+            use_gpu_ = false;
+        }
+    }
+
+    ~VHRFChainProcessor() {
+        if (state_) {
+            if (use_gpu_) {
+                free_vh_rf_chain(state_);
+            } else {
+                free_vh_rf_chain_cpu(state_);
+            }
+        }
+    }
+
+    void configure_taps(
+        py::array_t<int> delays,
+        py::array_t<float> amplitudes,
+        py::array_t<float> doppler_hz
+    ) {
+        py::buffer_info d_buf = delays.request();
+        py::buffer_info a_buf = amplitudes.request();
+        py::buffer_info f_buf = doppler_hz.request();
+
+        int n_taps = d_buf.size;
+        if (a_buf.size != n_taps || f_buf.size != n_taps) {
+            throw std::runtime_error("Tap arrays must have same length");
+        }
+
+        int ret;
+        if (use_gpu_) {
+            ret = configure_vh_taps(state_,
+                                    static_cast<int*>(d_buf.ptr),
+                                    static_cast<float*>(a_buf.ptr),
+                                    static_cast<float*>(f_buf.ptr),
+                                    n_taps);
+        } else {
+            ret = configure_vh_taps_cpu(state_,
+                                        static_cast<int*>(d_buf.ptr),
+                                        static_cast<float*>(a_buf.ptr),
+                                        static_cast<float*>(f_buf.ptr),
+                                        n_taps);
+        }
+
+        if (ret != 0) {
+            throw std::runtime_error("Failed to configure taps");
+        }
+    }
+
+    py::array_t<std::complex<float>> process(py::array_t<std::complex<float>> input) {
+        py::buffer_info buf = input.request();
+        int N = buf.size;
+        std::complex<float>* input_ptr = static_cast<std::complex<float>*>(buf.ptr);
+
+        if (N > max_input_samples_) {
+            throw std::runtime_error("Input exceeds maximum samples");
+        }
+
+        std::vector<float> in_real(N), in_imag(N);
+        for (int i = 0; i < N; i++) {
+            in_real[i] = input_ptr[i].real();
+            in_imag[i] = input_ptr[i].imag();
+        }
+
+        std::vector<float> out_real(N), out_imag(N);
+
+        int ret;
+        if (use_gpu_) {
+            ret = process_vh_rf_chain(state_,
+                                      in_real.data(), in_imag.data(), N,
+                                      out_real.data(), out_imag.data());
+        } else {
+            ret = process_vh_rf_chain_cpu(state_,
+                                          in_real.data(), in_imag.data(), N,
+                                          out_real.data(), out_imag.data());
+        }
+
+        if (ret != 0) {
+            throw std::runtime_error("VH RF chain processing failed");
+        }
+
+        // Create result array with proper shape AND strides
+        // The strides must be specified to avoid the zero-stride bug
+        std::vector<py::ssize_t> shape = {static_cast<py::ssize_t>(N)};
+        std::vector<py::ssize_t> strides_vec = {static_cast<py::ssize_t>(sizeof(std::complex<float>))};
+        py::array_t<std::complex<float>> result(shape, strides_vec);
+        py::buffer_info result_buf = result.request();
+        std::complex<float>* result_ptr = static_cast<std::complex<float>*>(result_buf.ptr);
+
+        for (int i = 0; i < N; i++) {
+            result_ptr[i] = std::complex<float>(out_real[i], out_imag[i]);
+        }
+
+        return result;
+    }
+
+    void reset() {
+        if (use_gpu_) {
+            reset_vh_rf_chain(state_);
+        } else {
+            reset_vh_rf_chain_cpu(state_);
+        }
+    }
+
+    bool is_using_gpu() const { return use_gpu_; }
+    int get_input_rate() const { return input_rate_; }
+    int get_rf_rate() const { return rf_rate_; }
+    void* get_state_ptr() const { return state_; }
+
+private:
+    int input_rate_;
+    int rf_rate_;
+    int max_input_samples_;
+    bool use_gpu_;
+    void* state_;
+};
+
+/**
  * Compute power spectrum.
  */
 py::array_t<float> compute_spectrum(
@@ -526,4 +710,141 @@ PYBIND11_MODULE(_hfpathsim_gpu, m) {
              py::arg("doppler_spread_hz"),
              py::arg("sample_rate"))
         .def("get_n_samples", &DopplerFadingGenerator::get_n_samples);
+
+    // VH RF Chain processor class (auto-selects GPU/CPU)
+    py::class_<VHRFChainProcessor>(m, "VHRFChainProcessor")
+        .def(py::init<int, int, int, float, float, float, unsigned long>(),
+             py::arg("input_rate"),
+             py::arg("rf_rate"),
+             py::arg("max_input_samples"),
+             py::arg("carrier_freq_hz"),
+             py::arg("coherence_time_sec"),
+             py::arg("k_factor") = 0.0f,
+             py::arg("seed") = 42,
+             "Initialize VH RF Chain processor. Automatically uses GPU if available, "
+             "otherwise falls back to optimized CPU implementation.")
+        .def("configure_taps", &VHRFChainProcessor::configure_taps,
+             py::arg("delays"),
+             py::arg("amplitudes"),
+             py::arg("doppler_hz"),
+             "Configure TDL taps with delays (samples), amplitudes, and Doppler shifts")
+        .def("process", &VHRFChainProcessor::process,
+             py::arg("input"),
+             "Process samples through VH RF chain")
+        .def("reset", &VHRFChainProcessor::reset,
+             "Reset processor state (fading, phase)")
+        .def("is_using_gpu", &VHRFChainProcessor::is_using_gpu,
+             "Returns True if using GPU, False if using CPU fallback")
+        .def("get_input_rate", &VHRFChainProcessor::get_input_rate)
+        .def("get_rf_rate", &VHRFChainProcessor::get_rf_rate)
+        .def("debug_test_upsample", [](VHRFChainProcessor& self, py::array_t<std::complex<float>> input) {
+            py::buffer_info buf = input.request();
+            int N = buf.size;
+            std::complex<float>* ptr = static_cast<std::complex<float>*>(buf.ptr);
+            std::vector<float> real(N), imag(N);
+            for (int i = 0; i < N; i++) {
+                real[i] = ptr[i].real();
+                imag[i] = ptr[i].imag();
+            }
+            // Only works for GPU backend
+            if (self.is_using_gpu()) {
+                return debug_test_upsample(self.get_state_ptr(), real.data(), imag.data(), N);
+            }
+            return -1.0f;
+        }, "Debug: test upsample and return power")
+        .def("debug_test_roundtrip", [](VHRFChainProcessor& self, py::array_t<std::complex<float>> input) {
+            py::buffer_info buf = input.request();
+            int N = buf.size;
+            std::complex<float>* ptr = static_cast<std::complex<float>*>(buf.ptr);
+            std::vector<float> real(N), imag(N);
+            for (int i = 0; i < N; i++) {
+                real[i] = ptr[i].real();
+                imag[i] = ptr[i].imag();
+            }
+            if (self.is_using_gpu()) {
+                return debug_test_resample_roundtrip(self.get_state_ptr(), real.data(), imag.data(), N);
+            }
+            return -1.0f;
+        }, "Debug: test upsample+downsample roundtrip and return power")
+        .def("debug_get_filter", [](VHRFChainProcessor& self) {
+            std::vector<float> filter(2048);
+            if (self.is_using_gpu()) {
+                int len = debug_get_filter(self.get_state_ptr(), filter.data(), 2048);
+                filter.resize(len);
+            }
+            return filter;
+        }, "Debug: get filter coefficients")
+        .def("debug_test_mixer", [](VHRFChainProcessor& self, py::array_t<std::complex<float>> input) {
+            py::buffer_info buf = input.request();
+            int N = buf.size;
+            std::complex<float>* ptr = static_cast<std::complex<float>*>(buf.ptr);
+            std::vector<float> real(N), imag(N);
+            for (int i = 0; i < N; i++) {
+                real[i] = ptr[i].real();
+                imag[i] = ptr[i].imag();
+            }
+            if (self.is_using_gpu()) {
+                return debug_test_mixer_roundtrip(self.get_state_ptr(), real.data(), imag.data(), N);
+            }
+            return -1.0f;
+        }, "Debug: test upsample+mixer+downsample (no TDL)")
+        .def("debug_test_tdl_unity", [](VHRFChainProcessor& self, py::array_t<std::complex<float>> input) {
+            py::buffer_info buf = input.request();
+            int N = buf.size;
+            std::complex<float>* ptr = static_cast<std::complex<float>*>(buf.ptr);
+            std::vector<float> real(N), imag(N);
+            for (int i = 0; i < N; i++) {
+                real[i] = ptr[i].real();
+                imag[i] = ptr[i].imag();
+            }
+            if (self.is_using_gpu()) {
+                return debug_test_tdl_unity(self.get_state_ptr(), real.data(), imag.data(), N);
+            }
+            return -1.0f;
+        }, "Debug: test full chain with TDL bypassed (unity gain)")
+        .def("debug_fading_stats", [](VHRFChainProcessor& self, int n_samples) {
+            float mean_mag = -1.0f, mean_magsq = -1.0f;
+            if (self.is_using_gpu()) {
+                debug_get_fading_stats(self.get_state_ptr(), n_samples, &mean_mag, &mean_magsq);
+            }
+            return std::make_pair(mean_mag, mean_magsq);
+        }, "Debug: get fading coefficient statistics")
+        .def("debug_test_constant_fading", [](VHRFChainProcessor& self, py::array_t<std::complex<float>> input, float fading_re, float fading_im) {
+            py::buffer_info buf = input.request();
+            int N = buf.size;
+            std::complex<float>* ptr = static_cast<std::complex<float>*>(buf.ptr);
+            std::vector<float> real(N), imag(N);
+            for (int i = 0; i < N; i++) {
+                real[i] = ptr[i].real();
+                imag[i] = ptr[i].imag();
+            }
+            if (self.is_using_gpu()) {
+                return debug_test_tdl_constant_fading(self.get_state_ptr(), real.data(), imag.data(), N, fading_re, fading_im);
+            }
+            return -1.0f;
+        }, "Debug: test TDL with constant fading value")
+        .def("debug_power_stages", [](VHRFChainProcessor& self, py::array_t<std::complex<float>> input) {
+            py::buffer_info buf = input.request();
+            int N = buf.size;
+            std::complex<float>* ptr = static_cast<std::complex<float>*>(buf.ptr);
+            std::vector<float> real(N), imag(N);
+            for (int i = 0; i < N; i++) {
+                real[i] = ptr[i].real();
+                imag[i] = ptr[i].imag();
+            }
+            std::vector<float> powers(7, -1.0f);
+            if (self.is_using_gpu()) {
+                debug_power_stages(self.get_state_ptr(), real.data(), imag.data(), N, powers.data());
+            }
+            // Return dict with stage names
+            py::dict result;
+            result["input"] = powers[0];
+            result["after_upsample"] = powers[1];
+            result["after_mixup"] = powers[2];
+            result["fading_magsq"] = powers[3];
+            result["after_tdl"] = powers[4];
+            result["after_mixdown"] = powers[5];
+            result["output"] = powers[6];
+            return result;
+        }, "Debug: report power at each stage of RF chain");
 }
