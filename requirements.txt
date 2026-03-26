@@ -14,15 +14,18 @@ pyqtgraph>=0.13
 # Audio output
 sounddevice>=0.4.0
 
-# Optional: GPU acceleration (requires CUDA 12.x)
-# cupy-cuda12x>=13.0
-# pybind11>=2.12
+# GPU acceleration (requires CUDA 12.x)
+cupy-cuda12x>=13.0
+pybind11>=2.12
 
-# Optional: REST API server
-# fastapi>=0.109
-# uvicorn[standard]>=0.27
-# websockets>=12.0
-# pydantic>=2.0
+# REST API server
+fastapi>=0.109
+uvicorn>=0.27
+httpx>=0.25
+pydantic>=2.0
+
+# HDF5 support
+h5py>=3.10
 
 # Optional: SDR hardware support
 # soapysdr
@@ -32,9 +35,11 @@ sounddevice>=0.4.0
 
 # Development dependencies (testing)
 pytest>=7.0
+pytest-cov>=4.0
 pytest-qt>=4.2
 pytest-asyncio>=0.21
-httpx>=0.25
+
+# Code quality
 ruff>=0.1
 mypy>=1.5
 pre-commit>=3.0
