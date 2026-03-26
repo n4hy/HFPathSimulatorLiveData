@@ -167,6 +167,7 @@ class OutputConfigWidget(QWidget):
         # Sample rate
         layout.addWidget(QLabel("Sample Rate:"), 1, 2)
         self._net_rate = QDoubleSpinBox()
+        self._net_rate.setDecimals(3)
         self._net_rate.setRange(0.001, 100.0)
         self._net_rate.setValue(2.0)
         self._net_rate.setSuffix(" Msps")
@@ -219,6 +220,7 @@ class OutputConfigWidget(QWidget):
         # Sample rate
         layout.addWidget(QLabel("Sample Rate:"), 1, 0)
         self._file_rate = QDoubleSpinBox()
+        self._file_rate.setDecimals(3)
         self._file_rate.setRange(0.001, 100.0)
         self._file_rate.setValue(2.0)
         self._file_rate.setSuffix(" Msps")
