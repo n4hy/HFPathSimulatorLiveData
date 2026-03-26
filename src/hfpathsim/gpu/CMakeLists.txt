@@ -47,6 +47,7 @@ set(CUDA_SOURCES
     kernels/noise.cu
     kernels/resampler.cu
     kernels/dispersion.cu
+    kernels/display.cu
 )
 
 # CPU fallback sources (compiled with OpenMP)
@@ -57,6 +58,7 @@ set(CPU_SOURCES
     kernels/noise_cpu.cpp
     kernels/resampler_cpu.cpp
     kernels/dispersion_cpu.cpp
+    kernels/display_cpu.cpp
 )
 
 # Find OpenMP for CPU fallback

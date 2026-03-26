@@ -37,6 +37,7 @@ try:
     NoiseGenerator = _hfpathsim_gpu.NoiseGenerator
     ResamplerProcessor = _hfpathsim_gpu.ResamplerProcessor
     DispersionProcessor = _hfpathsim_gpu.DispersionProcessor
+    DisplayProcessor = _hfpathsim_gpu.DisplayProcessor
 except ImportError:
     _gpu_module = None
     VHRFChainProcessor = None
@@ -46,6 +47,7 @@ except ImportError:
     NoiseGenerator = None
     ResamplerProcessor = None
     DispersionProcessor = None
+    DisplayProcessor = None
 
 # Fall back to CuPy
 if _gpu_module is None:

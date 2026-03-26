@@ -245,6 +245,45 @@ extern "C" {
     int get_dispersion_filter_length_cpu(void* state_ptr);
     void reset_dispersion_cpu(void* state_ptr);
     void free_dispersion_cpu(void* state_ptr);
+
+    // Display computations - GPU
+    void* init_display_gpu(int max_spectrum_size, int max_scatter_rows, int max_scatter_cols);
+    int magnitude_to_db_gpu(void* state_ptr, const float* mag, float* db, int N,
+                            float eps, float min_db);
+    int power_to_db_gpu(void* state_ptr, const float* power, float* db, int N,
+                        float eps, float min_db);
+    int fftshift_gpu(void* state_ptr, const float* input, float* output, int N);
+    int moving_average_gpu(void* state_ptr, const float* input, float* output, int N,
+                           int window_size);
+    int peak_hold_gpu(void* state_ptr, const float* current, float* peak, int N,
+                      float decay_rate);
+    int exponential_smooth_gpu(void* state_ptr, const float* current, float* smoothed, int N,
+                               float alpha);
+    int normalize_scattering_gpu(void* state_ptr, const float* S, float* S_norm, int rows,
+                                 int cols, float min_clip_db);
+    int transpose_2d_gpu(void* state_ptr, const float* input, float* output, int rows, int cols);
+    void reset_peak_hold_gpu(void* state_ptr, int N, float initial_value);
+    bool is_display_using_gpu(void* state_ptr);
+    void free_display_gpu(void* state_ptr);
+
+    // Display computations - CPU fallback
+    void* init_display_cpu(int max_spectrum_size, int max_scatter_rows, int max_scatter_cols);
+    int magnitude_to_db_cpu(void* state_ptr, const float* mag, float* db, int N,
+                            float eps, float min_db);
+    int power_to_db_cpu(void* state_ptr, const float* power, float* db, int N,
+                        float eps, float min_db);
+    int fftshift_cpu(void* state_ptr, const float* input, float* output, int N);
+    int moving_average_cpu(void* state_ptr, const float* input, float* output, int N,
+                           int window_size);
+    int peak_hold_cpu(void* state_ptr, const float* current, float* peak, int N,
+                      float decay_rate);
+    int exponential_smooth_cpu(void* state_ptr, const float* current, float* smoothed, int N,
+                               float alpha);
+    int normalize_scattering_cpu(void* state_ptr, const float* S, float* S_norm, int rows,
+                                 int cols, float min_clip_db);
+    int transpose_2d_cpu(void* state_ptr, const float* input, float* output, int rows, int cols);
+    void reset_peak_hold_cpu(void* state_ptr, int N, float initial_value);
+    void free_display_cpu(void* state_ptr);
 }
 
 /**
@@ -1394,6 +1433,243 @@ private:
     void* cpu_state_;
 };
 
+/**
+ * Display processor wrapper class (auto-selects GPU/CPU).
+ *
+ * Provides optimized display computations for GUI:
+ * - dB conversion (magnitude and power)
+ * - FFT shift
+ * - Moving average smoothing
+ * - Peak hold with decay
+ * - Exponential smoothing
+ * - 2D scattering normalization
+ */
+class DisplayProcessor {
+public:
+    DisplayProcessor(int max_spectrum_size, int max_scatter_rows = 256, int max_scatter_cols = 256)
+        : max_spectrum_size_(max_spectrum_size),
+          max_scatter_rows_(max_scatter_rows), max_scatter_cols_(max_scatter_cols),
+          gpu_state_(nullptr), cpu_state_(nullptr)
+    {
+        // Try GPU first
+        gpu_state_ = init_display_gpu(max_spectrum_size, max_scatter_rows, max_scatter_cols);
+        if (!gpu_state_ || !is_display_using_gpu(gpu_state_)) {
+            if (gpu_state_) {
+                free_display_gpu(gpu_state_);
+                gpu_state_ = nullptr;
+            }
+            cpu_state_ = init_display_cpu(max_spectrum_size, max_scatter_rows, max_scatter_cols);
+        }
+    }
+
+    ~DisplayProcessor() {
+        if (gpu_state_) free_display_gpu(gpu_state_);
+        if (cpu_state_) free_display_cpu(cpu_state_);
+    }
+
+    py::array_t<float> magnitude_to_db(py::array_t<float> mag, float eps = 1e-10f, float min_db = -120.0f) {
+        py::buffer_info buf = mag.request();
+        int N = buf.size;
+
+        std::vector<py::ssize_t> shape = {static_cast<py::ssize_t>(N)};
+        std::vector<py::ssize_t> strides = {static_cast<py::ssize_t>(sizeof(float))};
+        py::array_t<float> db(shape, strides);
+
+        int ret;
+        if (gpu_state_) {
+            ret = magnitude_to_db_gpu(gpu_state_,
+                                      static_cast<float*>(buf.ptr),
+                                      static_cast<float*>(db.request().ptr),
+                                      N, eps, min_db);
+        } else {
+            ret = magnitude_to_db_cpu(cpu_state_,
+                                      static_cast<float*>(buf.ptr),
+                                      static_cast<float*>(db.request().ptr),
+                                      N, eps, min_db);
+        }
+        if (ret != 0) throw std::runtime_error("magnitude_to_db failed");
+        return db;
+    }
+
+    py::array_t<float> power_to_db(py::array_t<float> power, float eps = 1e-10f, float min_db = -120.0f) {
+        py::buffer_info buf = power.request();
+        int N = buf.size;
+
+        std::vector<py::ssize_t> shape = {static_cast<py::ssize_t>(N)};
+        std::vector<py::ssize_t> strides = {static_cast<py::ssize_t>(sizeof(float))};
+        py::array_t<float> db(shape, strides);
+
+        int ret;
+        if (gpu_state_) {
+            ret = power_to_db_gpu(gpu_state_,
+                                  static_cast<float*>(buf.ptr),
+                                  static_cast<float*>(db.request().ptr),
+                                  N, eps, min_db);
+        } else {
+            ret = power_to_db_cpu(cpu_state_,
+                                  static_cast<float*>(buf.ptr),
+                                  static_cast<float*>(db.request().ptr),
+                                  N, eps, min_db);
+        }
+        if (ret != 0) throw std::runtime_error("power_to_db failed");
+        return db;
+    }
+
+    py::array_t<float> fftshift(py::array_t<float> input) {
+        py::buffer_info buf = input.request();
+        int N = buf.size;
+
+        std::vector<py::ssize_t> shape = {static_cast<py::ssize_t>(N)};
+        std::vector<py::ssize_t> strides = {static_cast<py::ssize_t>(sizeof(float))};
+        py::array_t<float> output(shape, strides);
+
+        int ret;
+        if (gpu_state_) {
+            ret = fftshift_gpu(gpu_state_,
+                               static_cast<float*>(buf.ptr),
+                               static_cast<float*>(output.request().ptr),
+                               N);
+        } else {
+            ret = fftshift_cpu(cpu_state_,
+                               static_cast<float*>(buf.ptr),
+                               static_cast<float*>(output.request().ptr),
+                               N);
+        }
+        if (ret != 0) throw std::runtime_error("fftshift failed");
+        return output;
+    }
+
+    py::array_t<float> moving_average(py::array_t<float> input, int window_size) {
+        py::buffer_info buf = input.request();
+        int N = buf.size;
+
+        std::vector<py::ssize_t> shape = {static_cast<py::ssize_t>(N)};
+        std::vector<py::ssize_t> strides = {static_cast<py::ssize_t>(sizeof(float))};
+        py::array_t<float> output(shape, strides);
+
+        int ret;
+        if (gpu_state_) {
+            ret = moving_average_gpu(gpu_state_,
+                                     static_cast<float*>(buf.ptr),
+                                     static_cast<float*>(output.request().ptr),
+                                     N, window_size);
+        } else {
+            ret = moving_average_cpu(cpu_state_,
+                                     static_cast<float*>(buf.ptr),
+                                     static_cast<float*>(output.request().ptr),
+                                     N, window_size);
+        }
+        if (ret != 0) throw std::runtime_error("moving_average failed");
+        return output;
+    }
+
+    void peak_hold(py::array_t<float> current, py::array_t<float> peak, float decay_rate) {
+        py::buffer_info cur_buf = current.request();
+        py::buffer_info peak_buf = peak.request(true);  // writable
+        int N = cur_buf.size;
+
+        int ret;
+        if (gpu_state_) {
+            ret = peak_hold_gpu(gpu_state_,
+                                static_cast<float*>(cur_buf.ptr),
+                                static_cast<float*>(peak_buf.ptr),
+                                N, decay_rate);
+        } else {
+            ret = peak_hold_cpu(cpu_state_,
+                                static_cast<float*>(cur_buf.ptr),
+                                static_cast<float*>(peak_buf.ptr),
+                                N, decay_rate);
+        }
+        if (ret != 0) throw std::runtime_error("peak_hold failed");
+    }
+
+    void exponential_smooth(py::array_t<float> current, py::array_t<float> smoothed, float alpha) {
+        py::buffer_info cur_buf = current.request();
+        py::buffer_info smooth_buf = smoothed.request(true);  // writable
+        int N = cur_buf.size;
+
+        int ret;
+        if (gpu_state_) {
+            ret = exponential_smooth_gpu(gpu_state_,
+                                         static_cast<float*>(cur_buf.ptr),
+                                         static_cast<float*>(smooth_buf.ptr),
+                                         N, alpha);
+        } else {
+            ret = exponential_smooth_cpu(cpu_state_,
+                                         static_cast<float*>(cur_buf.ptr),
+                                         static_cast<float*>(smooth_buf.ptr),
+                                         N, alpha);
+        }
+        if (ret != 0) throw std::runtime_error("exponential_smooth failed");
+    }
+
+    py::array_t<float> normalize_scattering(py::array_t<float> S, int rows, int cols, float min_clip_db = -60.0f) {
+        py::buffer_info buf = S.request();
+
+        std::vector<py::ssize_t> shape = {static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(cols)};
+        std::vector<py::ssize_t> strides = {static_cast<py::ssize_t>(cols * sizeof(float)),
+                                             static_cast<py::ssize_t>(sizeof(float))};
+        py::array_t<float> S_norm(shape, strides);
+
+        int ret;
+        if (gpu_state_) {
+            ret = normalize_scattering_gpu(gpu_state_,
+                                           static_cast<float*>(buf.ptr),
+                                           static_cast<float*>(S_norm.request().ptr),
+                                           rows, cols, min_clip_db);
+        } else {
+            ret = normalize_scattering_cpu(cpu_state_,
+                                           static_cast<float*>(buf.ptr),
+                                           static_cast<float*>(S_norm.request().ptr),
+                                           rows, cols, min_clip_db);
+        }
+        if (ret != 0) throw std::runtime_error("normalize_scattering failed");
+        return S_norm;
+    }
+
+    py::array_t<float> transpose_2d(py::array_t<float> input, int rows, int cols) {
+        py::buffer_info buf = input.request();
+
+        // Output is transposed: [cols, rows]
+        std::vector<py::ssize_t> shape = {static_cast<py::ssize_t>(cols), static_cast<py::ssize_t>(rows)};
+        std::vector<py::ssize_t> strides = {static_cast<py::ssize_t>(rows * sizeof(float)),
+                                             static_cast<py::ssize_t>(sizeof(float))};
+        py::array_t<float> output(shape, strides);
+
+        int ret;
+        if (gpu_state_) {
+            ret = transpose_2d_gpu(gpu_state_,
+                                   static_cast<float*>(buf.ptr),
+                                   static_cast<float*>(output.request().ptr),
+                                   rows, cols);
+        } else {
+            ret = transpose_2d_cpu(cpu_state_,
+                                   static_cast<float*>(buf.ptr),
+                                   static_cast<float*>(output.request().ptr),
+                                   rows, cols);
+        }
+        if (ret != 0) throw std::runtime_error("transpose_2d failed");
+        return output;
+    }
+
+    void reset_peak_hold(int N, float initial_value = -200.0f) {
+        if (gpu_state_) {
+            reset_peak_hold_gpu(gpu_state_, N, initial_value);
+        } else {
+            reset_peak_hold_cpu(cpu_state_, N, initial_value);
+        }
+    }
+
+    bool is_using_gpu() const { return gpu_state_ != nullptr; }
+
+private:
+    int max_spectrum_size_;
+    int max_scatter_rows_;
+    int max_scatter_cols_;
+    void* gpu_state_;
+    void* cpu_state_;
+};
+
 PYBIND11_MODULE(_hfpathsim_gpu, m) {
     m.doc() = "HF Path Simulator GPU acceleration module (Phase 5: cuFFT)";
 
@@ -1740,4 +2016,55 @@ PYBIND11_MODULE(_hfpathsim_gpu, m) {
         .def("reset", &DispersionProcessor::reset,
              "Reset dispersion filter state")
         .def("is_using_gpu", &DispersionProcessor::is_using_gpu);
+
+    // Display processor (auto-selects GPU/CPU)
+    py::class_<DisplayProcessor>(m, "DisplayProcessor")
+        .def(py::init<int, int, int>(),
+             py::arg("max_spectrum_size"),
+             py::arg("max_scatter_rows") = 256,
+             py::arg("max_scatter_cols") = 256,
+             "Initialize display processor for GUI computations")
+        .def("magnitude_to_db", &DisplayProcessor::magnitude_to_db,
+             py::arg("mag"),
+             py::arg("eps") = 1e-10f,
+             py::arg("min_db") = -120.0f,
+             "Convert magnitude to dB: 20*log10(mag+eps), clamped to min_db")
+        .def("power_to_db", &DisplayProcessor::power_to_db,
+             py::arg("power"),
+             py::arg("eps") = 1e-10f,
+             py::arg("min_db") = -120.0f,
+             "Convert power to dB: 10*log10(power+eps), clamped to min_db")
+        .def("fftshift", &DisplayProcessor::fftshift,
+             py::arg("input"),
+             "Perform FFT shift (swap halves)")
+        .def("moving_average", &DisplayProcessor::moving_average,
+             py::arg("input"),
+             py::arg("window_size"),
+             "Apply moving average smoothing")
+        .def("peak_hold", &DisplayProcessor::peak_hold,
+             py::arg("current"),
+             py::arg("peak"),
+             py::arg("decay_rate"),
+             "Update peak hold array with decay (modifies peak in-place)")
+        .def("exponential_smooth", &DisplayProcessor::exponential_smooth,
+             py::arg("current"),
+             py::arg("smoothed"),
+             py::arg("alpha"),
+             "Apply exponential smoothing (modifies smoothed in-place)")
+        .def("normalize_scattering", &DisplayProcessor::normalize_scattering,
+             py::arg("S"),
+             py::arg("rows"),
+             py::arg("cols"),
+             py::arg("min_clip_db") = -60.0f,
+             "Normalize scattering function to [0,1] with dB clipping")
+        .def("transpose_2d", &DisplayProcessor::transpose_2d,
+             py::arg("input"),
+             py::arg("rows"),
+             py::arg("cols"),
+             "Transpose 2D array")
+        .def("reset_peak_hold", &DisplayProcessor::reset_peak_hold,
+             py::arg("N"),
+             py::arg("initial_value") = -200.0f,
+             "Reset peak hold buffer to initial value")
+        .def("is_using_gpu", &DisplayProcessor::is_using_gpu);
 }
