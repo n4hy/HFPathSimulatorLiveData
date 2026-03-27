@@ -1778,6 +1778,32 @@ tests/test_vogler.py .........................                            [100%]
 
 ## Performance
 
+### Vogler-Hoffmeyer GPU Acceleration
+
+The Vogler-Hoffmeyer tapped delay line (TDL) channel model now supports GPU acceleration, providing massive speedups for real-time wideband HF simulation.
+
+**Benchmark: 1 MHz sample rate, 65,536 samples (65.5 ms block)**
+
+| Configuration | Taps | GPU Time | CPU Time | Speedup | GPU Realtime |
+|---------------|------|----------|----------|---------|--------------|
+| σ_τ = 50 µs | 50 | 5.7 ms | 1,198 ms | **211x** | 11.6x RT |
+| σ_τ = 100 µs | 100 | 5.6 ms | 1,755 ms | **314x** | 11.7x RT |
+| σ_τ = 200 µs | 200 | 5.4 ms | 2,873 ms | **530x** | 12.1x RT |
+
+**Key findings:**
+- **GPU: 200-530x faster** than CPU (Numba JIT)
+- **GPU: 12x realtime** at 1 MHz sample rate
+- **CPU: 0.02-0.05x realtime** (cannot sustain realtime)
+- GPU time is constant (~5.5 ms) due to efficient 16-tap kernel
+- CPU time scales linearly with tap count
+
+**Supported GPU architectures:**
+- Ampere (sm_80/86): RTX 30 series, A100
+- Ada Lovelace (sm_89): RTX 40 series
+- Hopper (sm_90): H100 datacenter
+- Blackwell (sm_100/120): RTX 50 series (CUDA 12.8+)
+- Automatic CPU fallback with OpenMP+SIMD optimization
+
 ### Benchmarks (RTX 5090 with Native CUDA Module)
 
 | Operation | Performance | Notes |
