@@ -41,6 +41,14 @@ except ImportError:
         return decorator
     prange = range
 
+# Try to import GPU processor
+try:
+    from hfpathsim.gpu import VHRFChainProcessor
+    GPU_AVAILABLE = VHRFChainProcessor is not None
+except ImportError:
+    GPU_AVAILABLE = False
+    VHRFChainProcessor = None
+
 
 # Numba-optimized inner processing loop
 @jit(nopython=True, parallel=False, cache=True)
@@ -274,6 +282,7 @@ class VoglerHoffmeyerConfig:
         spread_f_enabled: Enable spread-F random multiplication (Paper Section 3)
         random_seed: Optional seed for reproducibility
         k_factor: Rician K-factor for fading control (None=Rayleigh)
+        use_gpu: Enable GPU acceleration when available (default True)
     """
     sample_rate: float = 1e6
     modes: List[ModeParameters] = field(default_factory=lambda: [ModeParameters()])
@@ -282,6 +291,7 @@ class VoglerHoffmeyerConfig:
     k_factor: Optional[float] = None
     dispersion_enabled: bool = False
     carrier_frequency: float = 10e6
+    use_gpu: bool = True
 
     def to_dict(self) -> dict:
         """Convert configuration to dictionary for JSON serialization"""
@@ -292,6 +302,7 @@ class VoglerHoffmeyerConfig:
             'k_factor': self.k_factor,
             'dispersion_enabled': self.dispersion_enabled,
             'carrier_frequency': self.carrier_frequency,
+            'use_gpu': self.use_gpu,
             'modes': [
                 {
                     'name': m.name,
@@ -342,7 +353,8 @@ class VoglerHoffmeyerConfig:
             random_seed=data.get('random_seed', None),
             k_factor=data.get('k_factor', None),
             dispersion_enabled=data.get('dispersion_enabled', False),
-            carrier_frequency=data.get('carrier_frequency', 10e6)
+            carrier_frequency=data.get('carrier_frequency', 10e6),
+            use_gpu=data.get('use_gpu', True)
         )
 
     @classmethod
@@ -440,6 +452,15 @@ class VoglerHoffmeyerChannel:
         # Callbacks for state updates
         self._state_callbacks: List[Callable] = []
 
+        # Initialize GPU processors if requested and available
+        self.gpu_processors: List[Optional[any]] = []
+        self.use_gpu = False
+        if config.use_gpu and GPU_AVAILABLE:
+            self._setup_gpu_processors()
+        elif config.use_gpu and not GPU_AVAILABLE:
+            import warnings
+            warnings.warn("GPU requested but not available, using CPU fallback")
+
     def _setup_modes(self) -> None:
         """Pre-compute delay taps and parameters for each mode"""
         self.mode_data = []
@@ -511,6 +532,111 @@ class VoglerHoffmeyerChannel:
                     )
 
             self.mode_data.append(mode_data)
+
+    def _setup_gpu_processors(self) -> None:
+        """Initialize GPU processors for each mode.
+
+        Creates a VHRFChainProcessor per mode and configures it with the
+        appropriate tap delays, amplitudes, and Doppler shifts.
+        """
+        self.gpu_processors = []
+
+        # Determine maximum samples to process (for GPU buffer allocation)
+        # Use larger buffer for high sample rates, smaller for low rates
+        self.gpu_block_size = min(32768, max(4096, int(self.sample_rate / 10)))
+        max_input_samples = self.gpu_block_size
+
+        for mode_idx, mode_data in enumerate(self.mode_data):
+            mode = mode_data['mode']
+
+            try:
+                # Compute coherence time from sigma_f (AR(1) correlation parameter)
+                sigma_f = mode_data['sigma_f']
+                coherence_time_sec = 1.0 / sigma_f if sigma_f > 0 else 1.0
+
+                # K-factor for Rician fading
+                k_factor = self.config.k_factor if self.config.k_factor is not None else 0.0
+
+                # Create GPU processor (uses baseband rate for input and RF)
+                # When rf_rate == input_rate, the polyphase stages pass through
+                processor = VHRFChainProcessor(
+                    input_rate=int(self.sample_rate),
+                    rf_rate=int(self.sample_rate),  # Baseband-only processing
+                    max_input_samples=max_input_samples,
+                    carrier_freq_hz=float(self.config.carrier_frequency),
+                    coherence_time_sec=float(coherence_time_sec),
+                    k_factor=float(k_factor),
+                    seed=self.config.random_seed if self.config.random_seed else 42
+                )
+
+                # Configure taps with delay, amplitude, and Doppler
+                self._configure_gpu_taps(processor, mode_idx)
+
+                self.gpu_processors.append(processor)
+
+            except Exception as e:
+                import warnings
+                warnings.warn(f"Failed to initialize GPU processor for mode {mode_idx}: {e}")
+                self.gpu_processors.append(None)
+
+        # Check if any GPU processor was successfully created
+        self.use_gpu = any(p is not None for p in self.gpu_processors)
+
+        if self.use_gpu:
+            # Report which backend is being used
+            for i, p in enumerate(self.gpu_processors):
+                if p is not None and hasattr(p, 'is_using_gpu'):
+                    backend = "GPU" if p.is_using_gpu() else "CPU"
+
+    def _configure_gpu_taps(self, processor, mode_idx: int) -> None:
+        """Configure GPU processor taps from mode parameters.
+
+        Maps the Python mode_data to GPU format:
+        - delays: integer sample delays
+        - amplitudes: T(tau) * norm_factor (float32)
+        - doppler_hz: per-tap Doppler shift (float32)
+
+        Note: GPU kernel supports max 16 taps. If more taps needed,
+        they are decimated (sampled at regular intervals).
+        """
+        GPU_MAX_TAPS = 16  # Hardcoded limit in CUDA kernel
+
+        mode_data = self.mode_data[mode_idx]
+        mode = mode_data['mode']
+
+        # Get delay samples (integer) - relative to minimum delay
+        delay_samples = mode_data['delay_samples']
+        delays = (delay_samples - delay_samples[0]).astype(np.int32)
+
+        # Compute tap amplitudes: T(tau) * normalization factor
+        delay_us = mode_data['delay_us']
+        T = self._compute_delay_amplitude(delay_us, mode_data)
+        amplitudes = (T * mode_data['norm_factor']).astype(np.float32)
+
+        # Compute per-tap Doppler shifts
+        # f_D_effective(tau) = doppler_shift + b * (tau_c - tau)
+        tau_c = mode.tau_L + mode.sigma_c
+        b = mode.doppler_delay_coupling
+        doppler_hz = (mode.doppler_shift + b * (tau_c - delay_us)).astype(np.float32)
+
+        # Decimate taps if more than GPU limit
+        n_taps = len(delays)
+        if n_taps > GPU_MAX_TAPS:
+            # Select evenly spaced subset of taps
+            indices = np.linspace(0, n_taps - 1, GPU_MAX_TAPS, dtype=int)
+            delays = delays[indices]
+            amplitudes = amplitudes[indices]
+            doppler_hz = doppler_hz[indices]
+
+            # Re-normalize amplitudes to preserve power
+            amp_sum_sq_original = np.sum((T * mode_data['norm_factor'])**2)
+            amp_sum_sq_new = np.sum(amplitudes**2)
+            if amp_sum_sq_new > 0:
+                scale = np.sqrt(amp_sum_sq_original / amp_sum_sq_new)
+                amplitudes *= scale
+
+        # Configure the GPU processor
+        processor.configure_taps(delays, amplitudes, doppler_hz)
 
     def _compute_alpha_beta_low(self, mode: ModeParameters) -> Tuple[float, float]:
         """Compute alpha and beta for delay amplitude when y <= 1"""
@@ -797,12 +923,47 @@ class VoglerHoffmeyerChannel:
 
         return output
 
+    def _process_mode_gpu(self, input_samples: np.ndarray, mode_idx: int) -> np.ndarray:
+        """Process samples through GPU-accelerated TDL for a single mode.
+
+        Args:
+            input_samples: Complex I/Q input samples
+            mode_idx: Index of the propagation mode
+
+        Returns:
+            Complex output samples after channel effects
+        """
+        processor = self.gpu_processors[mode_idx]
+        if processor is None:
+            # Fallback to CPU if GPU processor not available for this mode
+            return self._process_mode(input_samples, mode_idx)
+
+        # Convert to complex64 for GPU processing
+        input_c64 = input_samples.astype(np.complex64)
+        n_samples = len(input_c64)
+
+        # Process in blocks if input exceeds GPU buffer size
+        if n_samples <= self.gpu_block_size:
+            # Single block - direct processing
+            output = processor.process(input_c64)
+        else:
+            # Block-based processing for large inputs
+            output = np.zeros(n_samples, dtype=np.complex64)
+            for start in range(0, n_samples, self.gpu_block_size):
+                end = min(start + self.gpu_block_size, n_samples)
+                block_output = processor.process(input_c64[start:end])
+                output[start:end] = block_output
+
+        return output.astype(np.complex128)
+
     def process(self, input_samples: np.ndarray) -> np.ndarray:
         """
         Apply channel model to I/Q samples
 
         This is the main processing function. It applies all configured
         propagation modes to the input signal and sums the results.
+
+        Uses GPU acceleration when available, with automatic CPU fallback.
 
         Args:
             input_samples: Complex I/Q input samples (numpy array)
@@ -824,7 +985,12 @@ class VoglerHoffmeyerChannel:
             else:
                 dispersed_input = input_samples
 
-            mode_output = self._process_mode(dispersed_input, mode_idx)
+            # Choose GPU or CPU processing path
+            if self.use_gpu and mode_idx < len(self.gpu_processors) and self.gpu_processors[mode_idx] is not None:
+                mode_output = self._process_mode_gpu(dispersed_input, mode_idx)
+            else:
+                mode_output = self._process_mode(dispersed_input, mode_idx)
+
             output += mode_output
 
         # Update time index for phase continuity across blocks
@@ -854,6 +1020,16 @@ class VoglerHoffmeyerChannel:
         self.time_index = 0
         self._setup_modes()
 
+        # Reset GPU processors if active
+        if self.use_gpu:
+            for processor in self.gpu_processors:
+                if processor is not None:
+                    processor.reset()
+            # Reconfigure taps after reset
+            for mode_idx, processor in enumerate(self.gpu_processors):
+                if processor is not None:
+                    self._configure_gpu_taps(processor, mode_idx)
+
     def get_state(self) -> dict:
         """Get current channel state"""
         mode_info = []
@@ -871,6 +1047,32 @@ class VoglerHoffmeyerChannel:
             'modes': mode_info,
             'num_modes': len(self.config.modes),
             'sample_rate': self.sample_rate,
+        }
+
+    def get_backend_info(self) -> dict:
+        """Get GPU/CPU backend information.
+
+        Returns:
+            Dictionary with:
+            - use_gpu: Whether GPU is being used
+            - num_gpu_modes: Number of modes using GPU
+            - mode_backends: List of backend per mode ("GPU", "CPU", or "unavailable")
+            - gpu_available: Whether GPU module is available
+        """
+        mode_backends = []
+        for i, processor in enumerate(self.gpu_processors):
+            if processor is None:
+                mode_backends.append("CPU")
+            elif hasattr(processor, 'is_using_gpu'):
+                mode_backends.append("GPU" if processor.is_using_gpu() else "CPU")
+            else:
+                mode_backends.append("unknown")
+
+        return {
+            'use_gpu': self.use_gpu,
+            'num_gpu_modes': sum(1 for p in self.gpu_processors if p is not None and hasattr(p, 'is_using_gpu') and p.is_using_gpu()),
+            'mode_backends': mode_backends,
+            'gpu_available': GPU_AVAILABLE,
         }
 
     def get_impulse_response(self, num_samples: int = 1024) -> np.ndarray:
