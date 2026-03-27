@@ -89,34 +89,38 @@ def create_vh_config_for_reference(ref: ReferenceDataset, sample_rate: float = 4
 
 
 def create_watterson_config_for_reference(ref: ReferenceDataset, sample_rate: float = 48000.0) -> WattersonConfig:
-    """Create Watterson config matching reference dataset parameters."""
-    # Create taps to match reference delay/Doppler spread
-    # Use 2 paths with delay separation to achieve target delay spread
+    """Create Watterson config matching reference dataset parameters.
+
+    For RMS delay spread D with N equal-power taps uniformly distributed
+    from 0 to τ_max, the relationship is:
+        RMS = τ_max * sqrt((N²-1)/(12*N²)) for N taps
+
+    For 2 equal-power taps at 0 and τ_max:
+        RMS = τ_max / 2
+        So τ_max = 2 * D
+
+    For 3 equal-power taps at 0, τ_max/2, τ_max:
+        RMS = τ_max / sqrt(6) ≈ 0.408 * τ_max
+        So τ_max = D * sqrt(6) ≈ 2.45 * D
+    """
     taps = []
+    target_rms = ref.delay_spread_ms
 
-    # First tap at zero delay
-    taps.append(WattersonTap(
-        delay_ms=0.0,
-        amplitude=1.0,
-        doppler_spread_hz=ref.doppler_spread_hz,
-    ))
-
-    # Additional taps spread across the delay range
-    if ref.num_paths >= 2:
-        # Second tap at 2x RMS delay spread (gives ~RMS spread for 2-path)
-        taps.append(WattersonTap(
-            delay_ms=ref.delay_spread_ms * 2.0,
-            amplitude=0.7,
-            doppler_spread_hz=ref.doppler_spread_hz,
-        ))
-
-    if ref.num_paths >= 3:
-        # Third tap at intermediate position
-        taps.append(WattersonTap(
-            delay_ms=ref.delay_spread_ms * 1.0,
-            amplitude=0.5,
-            doppler_spread_hz=ref.doppler_spread_hz,
-        ))
+    if ref.num_paths <= 2:
+        # Two equal-power taps: RMS = max_delay / 2
+        max_delay = target_rms * 2.0
+        taps = [
+            WattersonTap(delay_ms=0.0, amplitude=1.0, doppler_spread_hz=ref.doppler_spread_hz),
+            WattersonTap(delay_ms=max_delay, amplitude=1.0, doppler_spread_hz=ref.doppler_spread_hz),
+        ]
+    else:
+        # Three equal-power taps: RMS = max_delay / sqrt(6)
+        max_delay = target_rms * np.sqrt(6)
+        taps = [
+            WattersonTap(delay_ms=0.0, amplitude=1.0, doppler_spread_hz=ref.doppler_spread_hz),
+            WattersonTap(delay_ms=max_delay / 2.0, amplitude=1.0, doppler_spread_hz=ref.doppler_spread_hz),
+            WattersonTap(delay_ms=max_delay, amplitude=1.0, doppler_spread_hz=ref.doppler_spread_hz),
+        ]
 
     return WattersonConfig(
         sample_rate_hz=sample_rate,
@@ -157,14 +161,23 @@ def validate_channel(
     envelope_ratio = mean_env / rms_env if rms_env > 0 else 0.0
 
     # For delay spread, use channel's impulse response method
+    # Ensure IR length can capture maximum expected delay (3x RMS spread typical)
+    max_delay_ms = ref.delay_spread_ms * 5.0  # Allow 5x margin
+    ir_length = max(1024, int(max_delay_ms * sample_rate / 1000) + 100)
+
     channel.reset()
     if hasattr(channel, 'get_impulse_response'):
         try:
-            h = channel.get_impulse_response(num_samples=8192)
+            # VoglerHoffmeyerChannel uses num_samples
+            h = channel.get_impulse_response(num_samples=ir_length)
         except TypeError:
-            h = channel.get_impulse_response()
+            try:
+                # WattersonChannel uses length
+                h = channel.get_impulse_response(length=ir_length)
+            except TypeError:
+                h = channel.get_impulse_response()
     else:
-        impulse = np.zeros(8192, dtype=np.complex128)
+        impulse = np.zeros(ir_length, dtype=np.complex128)
         impulse[0] = 1.0
         h = channel.process(impulse)
 
