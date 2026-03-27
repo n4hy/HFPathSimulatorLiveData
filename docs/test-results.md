@@ -1,7 +1,7 @@
 # Test Results
 
-**Date:** 2026-03-25
-**Commit:** fc0b389
+**Date:** 2026-03-26
+**Commit:** bcd2a81
 **Python:** 3.12.3
 **Platform:** Linux 6.17.0-19-generic
 
@@ -9,11 +9,11 @@
 
 | Metric | Value |
 |--------|-------|
-| **Total Tests** | 428 |
-| **Passed** | 428 |
+| **Total Tests** | 438 |
+| **Passed** | 438 |
 | **Failed** | 0 |
-| **Warnings** | 0 |
-| **Duration** | 2.89s |
+| **Warnings** | 1 |
+| **Duration** | 6.70s |
 
 ## Test Coverage by Module
 
@@ -34,6 +34,7 @@
 | `test_spectrum.py` | 21 | FFT analysis, spectrum computation, windowing |
 | `test_integration.py` | 17 | GNU Radio, MATLAB interfaces, external tools |
 | `test_input.py` | 13 | File, network, SDR input sources |
+| `test_vogler_hoffmeyer_gpu.py` | 10 | GPU acceleration for Vogler-Hoffmeyer channel model |
 
 ## Test Categories
 

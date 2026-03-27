@@ -36,6 +36,12 @@ Step-by-step guides for common tasks:
 3. [SDR Integration](tutorials/03-sdr-integration.md) - Connect real radio hardware
 4. [GNU Radio Bridge](tutorials/04-gnuradio-bridge.md) - Integrate with GNU Radio
 5. [Custom Channel Models](tutorials/05-custom-channels.md) - Create your own propagation models
+6. [Channel Validation](tutorials/06-channel-validation.md) - Validate against NTIA/ITU-R references
+7. [HF Modem Testing](tutorials/07-modem-testing.md) - Test modem designs with ITU-R conditions
+
+### Theory & Background
+
+- **[HF Propagation Theory](hf-propagation-theory.md)** - Ionospheric physics and channel modeling fundamentals
 
 ### API Reference
 
@@ -66,7 +72,7 @@ Step-by-step guides for common tasks:
 
 ### Development
 
-- [Test Results](test-results.md) - Current test suite status (428 tests)
+- [Test Results](test-results.md) - Current test suite status (438 tests)
 
 ## System Requirements
 
