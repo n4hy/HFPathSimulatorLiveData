@@ -187,9 +187,9 @@ The simulator implements the Vogler-Hoffmeyer reflection coefficient model from 
 - **Latency Analysis**: Percentile-based latency measurement
 - **Report Generation**: Export to JSON and HTML formats
 
-### Real-World Validation (NEW)
+### Real-World Validation
 
-Compare simulated channels against measured data from real ionospheric campaigns:
+Compare simulated channels against measured data from real ionospheric campaigns. **100% validation pass rate** (22/22 tests) against published reference datasets.
 
 - **Reference Datasets**
   - NTIA TR-90-255 measurements (quiet, disturbed, auroral, spread-F)
@@ -1518,10 +1518,12 @@ HFPathSimulatorLiveData/
 │           ├── recording_panel.py # Record/playback controls
 │           └── parameters.py      # Legacy parameter panel (deprecated)
 │
-├── tests/                         # Unit tests (290+ tests)
+├── tests/                         # Unit tests (438 tests)
 │   ├── test_vogler.py             # Vogler model tests
+│   ├── test_vogler_hoffmeyer_gpu.py # Vogler-Hoffmeyer GPU acceleration
 │   ├── test_channel_models.py     # Watterson, noise, impairments
 │   ├── test_itu_channels.py       # ITU-R F.520, F.1289, F.1487 models
+│   ├── test_validation.py         # Reference datasets, channel statistics
 │   ├── test_profiling.py          # Profiling and benchmarking
 │   ├── test_raytracing.py         # Ray tracing geometry & engine
 │   ├── test_sporadic_e.py         # Sporadic-E layer
@@ -1667,6 +1669,33 @@ Space weather impacts on HF propagation:
 
 ---
 
+## Documentation
+
+Comprehensive documentation is available in the `docs/` directory:
+
+### Getting Started
+- **[Quick Start Guide](docs/getting-started.md)** - Get up and running in 5 minutes
+- **[User Guide](docs/user-guide.md)** - Complete guide to all features
+
+### Tutorials
+1. [Basic Channel Simulation](docs/tutorials/01-basic-simulation.md) - Your first simulation
+2. [GUI Walkthrough](docs/tutorials/02-gui-walkthrough.md) - Using the graphical interface
+3. [SDR Integration](docs/tutorials/03-sdr-integration.md) - Connect real radio hardware
+4. [GNU Radio Bridge](docs/tutorials/04-gnuradio-bridge.md) - Integrate with GNU Radio
+5. [Custom Channel Models](docs/tutorials/05-custom-channels.md) - Create your own propagation models
+6. [Channel Validation](docs/tutorials/06-channel-validation.md) - Validate against NTIA/ITU-R references
+7. [HF Modem Testing](docs/tutorials/07-modem-testing.md) - Test modem designs with ITU-R conditions
+
+### Theory & Reference
+- **[HF Propagation Theory](docs/hf-propagation-theory.md)** - Ionospheric physics and channel modeling fundamentals
+
+### API Reference
+- [REST API Reference](docs/api/rest-api.md) - HTTP endpoints for remote control
+- [Python API Reference](docs/api/python-api.md) - Direct Python integration
+- [WebSocket Streaming](docs/api/websocket-api.md) - Real-time data streaming
+
+---
+
 ## Testing
 
 ### Running Tests
@@ -1692,7 +1721,7 @@ PYTHONPATH=src pytest tests/ -k "test_sec_phi" -v
 ```
 ============================= test session starts ==============================
 platform linux -- Python 3.12.3, pytest-9.0.2
-collected 428 items
+collected 438 items
 
 tests/test_api.py ...............................                         [  7%]
 tests/test_channel_models.py ...................................................[ 19%]
@@ -1710,7 +1739,7 @@ tests/test_sporadic_e.py ............................                     [ 96%]
 tests/test_validation.py ................................................ [ 96%]
 tests/test_vogler.py .........................                            [100%]
 
-======================== 428 passed, 1 warning in 3.97s ========================
+======================== 438 passed, 1 warning in 6.70s ========================
 ```
 
 ### Test Summary
@@ -1732,7 +1761,8 @@ tests/test_vogler.py .........................                            [100%]
 | `test_sporadic_e.py` | 28 | Es config, layer injection, occurrence estimation |
 | `test_validation.py` | 48 | Reference datasets, channel statistics, fading validation |
 | `test_vogler.py` | 25 | Vogler parameters, HFChannel, reflection coefficients |
-| **Total** | **428** | **All passing** |
+| `test_vogler_hoffmeyer_gpu.py` | 10 | GPU acceleration for Vogler-Hoffmeyer channel model |
+| **Total** | **438** | **All passing** |
 
 ### Test Categories
 
