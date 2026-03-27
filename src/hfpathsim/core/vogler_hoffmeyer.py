@@ -135,26 +135,27 @@ def _process_samples_numba(input_samples, buffer, delay_samples, T,
 # Numba-optimized inner processing loop for exponential correlation
 @jit(nopython=True, parallel=False, cache=True)
 def _process_samples_numba_exp(input_samples, buffer, delay_samples, T,
-                               x_real_state, x_imag_state, lambda_param,
+                               C_state, rho, innovation_coeff,
                                delay_us, tau_c, f_s, b, t_start, delta_t,
                                rng_state, direct_coeff, scatter_coeff,
                                spread_f_enabled):
     """
     Numba-optimized inner loop for channel processing with exponential correlation.
+
+    Uses proper AR(1) process with Gaussian innovations via Box-Muller transform.
+    This produces fading with exponential autocorrelation function.
     """
     num_input = len(input_samples)
     num_taps = len(delay_samples)
     output = np.zeros(num_input, dtype=np.complex128)
 
-    # Copy state arrays - one state per tap for independent fading
-    x_real = x_real_state.copy()
-    x_imag = x_imag_state.copy()
+    # Copy state arrays
+    C = C_state.copy()
     buf = buffer.copy()
     buf_len = len(buf)
 
     # Pre-compute constants
     two_pi = 2.0 * np.pi
-    sqrt2 = np.sqrt(2.0)
 
     for n in range(num_input):
         # Current time
@@ -165,25 +166,23 @@ def _process_samples_numba_exp(input_samples, buffer, delay_samples, T,
             buf[i] = buf[i-1]
         buf[0] = input_samples[n]
 
-        # Generate exponentially correlated fading for each tap INDEPENDENTLY
-        C = np.zeros(num_taps, dtype=np.complex128)
-
+        # Generate complex Gaussian innovations using Box-Muller transform
+        z = np.zeros(num_taps, dtype=np.complex128)
         for k in range(num_taps):
-            # Generate independent uniform random for this tap's real part
+            # LCG random number generator
             rng_state[0] = (rng_state[0] * 1103515245 + 12345) & 0x7fffffff
-            u_real = (rng_state[0] / 2147483648.0) - 0.5
-
-            # Generate independent uniform random for this tap's imag part
+            u1 = (rng_state[0] + 0.5) / 2147483648.0  # (0, 1) exclusive
             rng_state[0] = (rng_state[0] * 1103515245 + 12345) & 0x7fffffff
-            u_imag = (rng_state[0] / 2147483648.0) - 0.5
+            u2 = rng_state[0] / 2147483648.0
 
-            # AR(1) update for this tap (independent of other taps)
-            x_real[k] = u_real + (x_real[k] - u_real) * lambda_param
-            x_imag[k] = u_imag + (x_imag[k] - u_imag) * lambda_param
+            # Box-Muller transform for complex Gaussian
+            mag = np.sqrt(-2.0 * np.log(u1))
+            theta = two_pi * u2
+            z[k] = (mag * np.cos(theta) + 1j * mag * np.sin(theta)) / np.sqrt(2.0)
 
-            # Combine into complex fading coefficient with unit variance
-            sqrt12 = 3.4641016151377544  # sqrt(12)
-            C[k] = sqrt12 * (x_real[k] + 1j * x_imag[k]) / sqrt2
+        # AR(1) update: C[n] = rho * C[n-1] + sqrt(1-rho^2) * z[n]
+        # This produces exponential autocorrelation: R(tau) = exp(-|tau|/tau_c)
+        C = rho * C + innovation_coeff * z
 
         # Compute phase for each tap and accumulate output
         for k in range(num_taps):
@@ -210,7 +209,7 @@ def _process_samples_numba_exp(input_samples, buffer, delay_samples, T,
 
                 output[n] += buf[delay] * tap_gain
 
-    return output, buf, x_real, x_imag, rng_state
+    return output, buf, C, rng_state
 
 
 class CorrelationType(Enum):
@@ -482,13 +481,16 @@ class VoglerHoffmeyerChannel:
             # Compute sigma_f for Doppler spread
             sigma_f = self._compute_sigma_f(mode)
 
-            # Initialize correlation parameters
-            exp_lambda = np.exp(-self.delta_t * sigma_f)
-            exp_x_real_state = self.rng.uniform(-0.5, 0.5, num_taps)
-            exp_x_imag_state = self.rng.uniform(-0.5, 0.5, num_taps)
+            # Initialize correlation parameters for both Gaussian and Exponential
+            # Gaussian: R(tau) = exp(-pi*(sigma_f*tau)^2) -> rho = exp(-pi*(sigma_f*delta_t)^2)
             gauss_rho = np.exp(-np.pi * (sigma_f * self.delta_t)**2)
             z_init = self.rng.standard_normal(num_taps) + 1j * self.rng.standard_normal(num_taps)
             gauss_C_state = z_init / np.sqrt(2)
+
+            # Exponential: R(tau) = exp(-2*pi*sigma_f*|tau|) -> rho = exp(-2*pi*sigma_f*delta_t)
+            exp_rho = np.exp(-2 * np.pi * sigma_f * self.delta_t)
+            z_init_exp = self.rng.standard_normal(num_taps) + 1j * self.rng.standard_normal(num_taps)
+            exp_C_state = z_init_exp / np.sqrt(2)
 
             mode_data = {
                 'mode': mode,
@@ -503,9 +505,8 @@ class VoglerHoffmeyerChannel:
                 'sigma_f': sigma_f,
                 'gauss_rho': gauss_rho,
                 'gauss_C_state': gauss_C_state,
-                'exp_lambda': exp_lambda,
-                'exp_x_real_state': exp_x_real_state,
-                'exp_x_imag_state': exp_x_imag_state,
+                'exp_rho': exp_rho,
+                'exp_C_state': exp_C_state,
                 'buffer': np.zeros(max(1, tau_U_samples + 1), dtype=np.complex128),
                 'norm_factor': 1.0,
                 'dispersion_d': 0.0
@@ -682,26 +683,31 @@ class VoglerHoffmeyerChannel:
         return alpha, beta
 
     def _compute_sigma_f(self, mode: ModeParameters) -> float:
-        """Compute sigma_f spectral width parameter for correlation factor C(t)"""
-        A = mode.amplitude
-        A_fl = mode.floor_amplitude
+        """Compute sigma_f spectral width parameter for correlation factor C(t).
+
+        sigma_f controls the fading rate through the AR(1) coefficient:
+        - Gaussian: rho = exp(-pi*(sigma_f*delta_t)^2)
+        - Exponential: rho = exp(-2*pi*sigma_f*delta_t)
+
+        For proper Rayleigh fading statistics, sigma_f should be based on
+        the Doppler spread sigma_D. The relationship depends on the Doppler
+        spectrum shape:
+        - Gaussian spectrum: sigma_f = sigma_D (direct mapping)
+        - Exponential spectrum: sigma_f = 2*pi*sigma_D (to match fading rate)
+        """
         sigma_D = mode.sigma_D
 
-        if A <= 0 or A_fl <= 0 or sigma_D <= 0:
+        if sigma_D <= 0:
             return 1.0
 
-        ratio = A_fl / A
-
         if mode.correlation_type == CorrelationType.GAUSSIAN:
-            log_term = -np.log(ratio)
-            if log_term <= 0:
-                return sigma_D
-            sigma_f = sigma_D * np.sqrt(np.pi / log_term)
+            # Gaussian Doppler spectrum: direct mapping
+            sigma_f = sigma_D
         else:
-            denom = 1 - ratio**2
-            if denom <= 0:
-                return sigma_D
-            sigma_f = 2 * np.pi * sigma_D * ratio / np.sqrt(denom)
+            # Exponential Doppler spectrum: scale for proper fading rate
+            # The exponential autocorrelation R(τ) = exp(-|τ|/τc) has
+            # coherence time τc = 1/(2*pi*fd) for Doppler spread fd
+            sigma_f = 2 * np.pi * sigma_D
 
         return max(sigma_f, 1e-6)
 
@@ -809,15 +815,21 @@ class VoglerHoffmeyerChannel:
 
     def _process_mode_numba_exp(self, input_samples: np.ndarray, mode_idx: int,
                                 T: np.ndarray) -> np.ndarray:
-        """Numba-optimized processing for exponential correlation"""
+        """Numba-optimized processing for exponential correlation.
+
+        Uses proper AR(1) process with Gaussian innovations (Box-Muller).
+        Same structure as Gaussian correlation but with exp(-|tau|/tau_c)
+        autocorrelation function.
+        """
         mode_data = self.mode_data[mode_idx]
         mode = mode_data['mode']
         delay_us = mode_data['delay_us']
         delay_samples = mode_data['delay_samples']
 
-        lambda_param = mode_data['exp_lambda']
-        x_real_state = mode_data['exp_x_real_state'].copy()
-        x_imag_state = mode_data['exp_x_imag_state'].copy()
+        # Use same AR(1) structure as Gaussian correlation
+        rho = mode_data['exp_rho']
+        innovation_coeff = np.sqrt(1 - rho**2)
+        C_state = mode_data['exp_C_state'].copy()
 
         tau_c = mode.tau_L + mode.sigma_c
         f_s = mode.doppler_shift
@@ -835,14 +847,14 @@ class VoglerHoffmeyerChannel:
         if 'numba_rng_state_exp' not in mode_data:
             mode_data['numba_rng_state_exp'] = np.array([self.rng.integers(1, 2**31-1)], dtype=np.int64)
 
-        output, new_buffer, new_x_real, new_x_imag, new_rng = _process_samples_numba_exp(
+        output, new_buffer, new_C, new_rng = _process_samples_numba_exp(
             input_samples,
             mode_data['buffer'],
             delay_samples.astype(np.int64),
             T,
-            x_real_state,
-            x_imag_state,
-            lambda_param,
+            C_state,
+            rho,
+            innovation_coeff,
             delay_us,
             tau_c,
             f_s,
@@ -856,8 +868,7 @@ class VoglerHoffmeyerChannel:
         )
 
         mode_data['buffer'] = new_buffer
-        mode_data['exp_x_real_state'] = new_x_real
-        mode_data['exp_x_imag_state'] = new_x_imag
+        mode_data['exp_C_state'] = new_C
         mode_data['numba_rng_state_exp'] = new_rng
 
         return output
