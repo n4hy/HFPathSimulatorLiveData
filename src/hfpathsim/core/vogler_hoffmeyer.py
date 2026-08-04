@@ -915,7 +915,17 @@ class VoglerHoffmeyerChannel:
 
     def _process_mode_python(self, input_samples: np.ndarray, mode_idx: int,
                             T: np.ndarray) -> np.ndarray:
-        """Python implementation (fallback when Numba unavailable)"""
+        """Python implementation (fallback when Numba unavailable).
+
+        Uses gauss_rho / gauss_C_state for GAUSSIAN correlation and
+        exp_rho / exp_C_state for EXPONENTIAL correlation. The earlier
+        implementation always used the gauss_* state pair regardless of
+        the requested correlation_type, which — combined with the fact that
+        gauss_rho = exp(-pi*(sigma_D*Delta_t)^2) approaches 1 at practical
+        sample rates — produced essentially frozen fading and made both
+        exponential-branch tests and the validator silently degenerate
+        whenever numba was not installed.
+        """
         mode_data = self.mode_data[mode_idx]
         mode = mode_data['mode']
         num_taps = mode_data['num_taps']
@@ -934,8 +944,14 @@ class VoglerHoffmeyerChannel:
             scatter_coeff = 1.0
 
         buffer = mode_data['buffer'].copy()
-        rho = mode_data['gauss_rho']
-        C_state = mode_data['gauss_C_state'].copy()
+        if mode.correlation_type == CorrelationType.EXPONENTIAL:
+            state_key = 'exp_C_state'
+            rho = mode_data['exp_rho']
+        else:
+            state_key = 'gauss_C_state'
+            rho = mode_data['gauss_rho']
+        C_state = mode_data[state_key].copy()
+        innovation_coeff = np.sqrt(1 - rho**2)
 
         for n in range(num_input):
             t = (self.time_index + n) * self.delta_t
@@ -947,7 +963,6 @@ class VoglerHoffmeyerChannel:
             # Generate fading
             z = self.rng.standard_normal(num_taps) + 1j * self.rng.standard_normal(num_taps)
             z /= np.sqrt(2)
-            innovation_coeff = np.sqrt(1 - rho**2)
             C_state = rho * C_state + innovation_coeff * z
 
             fading_gain = scatter_coeff * C_state
@@ -970,7 +985,7 @@ class VoglerHoffmeyerChannel:
                     output[n] += buffer[delay] * tap_gains[k]
 
         mode_data['buffer'] = buffer
-        mode_data['gauss_C_state'] = C_state
+        mode_data[state_key] = C_state
 
         return output
 

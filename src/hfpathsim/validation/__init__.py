@@ -43,6 +43,7 @@ from .statistics import (
     # Delay/Doppler analysis
     compute_delay_spread,
     compute_doppler_spread,
+    compute_doppler_bandwidth,
     compute_coherence_bandwidth,
     compute_coherence_time,
     # Scattering function
@@ -85,6 +86,7 @@ __all__ = [
     # Statistics
     "compute_delay_spread",
     "compute_doppler_spread",
+    "compute_doppler_bandwidth",
     "compute_coherence_bandwidth",
     "compute_coherence_time",
     "compute_scattering_function",

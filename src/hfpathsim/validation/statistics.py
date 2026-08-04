@@ -215,6 +215,116 @@ def compute_doppler_spread(
     )
 
 
+def compute_doppler_bandwidth(
+    fading_samples: np.ndarray,
+    sample_rate_hz: float,
+    threshold_db: float = -3.0102999566398125,
+    nperseg: int | None = None,
+    smoothing_fraction: float = 0.005,
+) -> float:
+    """Two-sided bandwidth of the Doppler PSD at a given threshold below the peak.
+
+    Uses Welch's method to estimate the PSD of the complex fading process,
+    smooths the PSD with a Hann kernel spanning `smoothing_fraction` of the
+    total PSD length (this suppresses periodogram variance so a per-bin
+    threshold crossing is robust), then walks outward from the peak bin on
+    each side until the smoothed PSD first drops below `threshold_db` below
+    the peak. Returns the total (two-sided) width between those crossings.
+
+    Why this metric rather than the RMS Doppler spread:
+      RMS bandwidth sqrt(int f^2 S(f) df / int S(f) df) is well-defined for
+      Gaussian-shaped Doppler spectra (as produced by FIR-shaped fading
+      generators). For Lorentzian-shaped spectra — as produced by any AR(1)
+      fading generator — the integrand f^2 S(f) has heavy tails and the
+      RMS diverges; on a finite grid the RMS is dominated by the Nyquist
+      cutoff, not by the underlying coherence bandwidth. The bandwidth
+      at a fixed threshold below the peak is finite in both cases and
+      captures the characteristic Doppler spread that matters physically
+      (coherence time ~ 1 / bandwidth).
+
+    Reference relations (small-Delta_t / continuous limit):
+      AR(1) fading, rho = exp(-2 pi sigma_D Delta_t)  ->  Lorentzian PSD:
+          two-sided -3 dB bandwidth = 2 * sigma_D
+      FIR-shaped fading, Gaussian h(t) with time-domain std sigma_t =
+      1/(2 pi sigma_D) seconds  ->  Gaussian PSD:
+          two-sided -3 dB bandwidth = 2 * sigma_D * sqrt(ln 2)  ~=  1.665 * sigma_D
+      (The two shape factors differ by only ~20%; both bracket the reference
+      Doppler spread within a factor closer than the ~50% validation tolerance.)
+
+    Args:
+        fading_samples: Complex fading time series (e.g. channel output of
+            a CW input, which IS the channel gain g(t)).
+        sample_rate_hz: Sample rate of the fading process in Hz.
+        threshold_db: Threshold below the PSD peak. Default is -10 log10(2)
+            = -3.0103 dB (half-power / -3 dB bandwidth).
+        nperseg: Welch segment length. Default: len(signal) // 8 clamped to
+            [256, 8192] and rounded up to the next power of two. Values in
+            this range give O(10) Welch segments for typical validator inputs
+            (~30 s at 100 Hz downsampled fading rate).
+        smoothing_fraction: Width of the Hann smoothing kernel as a fraction
+            of the PSD length. 0.005 (0.5 %) is a compromise that keeps the
+            Lorentzian AR(1) case accurate (peak preserved) while suppressing
+            enough single-bin variance to make the Gaussian FIR case stable.
+            Larger values broaden narrow peaks; smaller values leave the
+            Lorentzian noise-limited.
+
+    Returns:
+        Two-sided bandwidth in Hz. Zero if the signal is too short or the
+        PSD is degenerate.
+    """
+    n = len(fading_samples)
+    if n < 32:
+        return 0.0
+
+    if nperseg is None:
+        target = n // 8
+        target = max(256, min(target, 65536))
+        nperseg = 1 << int(np.ceil(np.log2(target)))
+        nperseg = max(1, min(nperseg, n))
+
+    freq, psd = signal.welch(
+        fading_samples,
+        fs=sample_rate_hz,
+        nperseg=nperseg,
+        return_onesided=False,
+        detrend=False,
+    )
+    order = np.argsort(freq)
+    freq = freq[order]
+    psd = psd[order]
+
+    # Suppress single-bin variance by smoothing with a normalized Hann kernel.
+    npsd = len(psd)
+    kernel_len = max(3, int(smoothing_fraction * npsd) | 1)
+    if kernel_len < npsd:
+        kernel = np.hanning(kernel_len)
+        kernel = kernel / kernel.sum()
+        psd = np.convolve(psd, kernel, mode="same")
+
+    peak_idx = int(np.argmax(psd))
+    peak_power = float(psd[peak_idx])
+    if peak_power <= 0.0:
+        return 0.0
+
+    threshold_linear = peak_power * 10.0 ** (threshold_db / 10.0)
+
+    right = peak_idx
+    for i in range(peak_idx + 1, npsd):
+        if psd[i] < threshold_linear:
+            right = i - 1
+            break
+        right = i
+
+    left = peak_idx
+    for i in range(peak_idx - 1, -1, -1):
+        if psd[i] < threshold_linear:
+            left = i + 1
+            break
+        left = i
+
+    return float(freq[right] - freq[left])
+
+
 # =============================================================================
 # Coherence Metrics
 # =============================================================================

@@ -24,7 +24,10 @@ from hfpathsim.core.vogler_hoffmeyer import (
     CorrelationType,
     GPU_AVAILABLE,
 )
-from hfpathsim.validation.statistics import compute_delay_spread
+from hfpathsim.validation.statistics import (
+    compute_delay_spread,
+    compute_doppler_bandwidth,
+)
 
 
 SAMPLE_RATE_HZ = 48_000.0
@@ -169,6 +172,89 @@ class TestVHTapDecimationWarns:
             pytest.skip("GPU module not available; decimation path unreachable")
         with pytest.warns(RuntimeWarning, match=r"GPU tap decimation"):
             VoglerHoffmeyerChannel(cfg)
+
+
+class TestDopplerBandwidthMetric:
+    """Guards compute_doppler_bandwidth on synthetic AR(1) (Lorentzian PSD).
+
+    For a discrete AR(1) with rho = exp(-2*pi*sigma_D*Delta_t):
+      two-sided -3 dB bandwidth = 2 * sigma_D  (Lorentzian).
+    """
+
+    def test_ar1_lorentzian_bandwidth_matches_2_sigma_d(self):
+        fs = 1000.0
+        sigma_D = 5.0
+        n = 200_000
+        rng = np.random.default_rng(2026)
+        dt = 1.0 / fs
+        rho = np.exp(-2 * np.pi * sigma_D * dt)
+        alpha = np.sqrt(1 - rho**2)
+        z = (rng.standard_normal(n) + 1j * rng.standard_normal(n)) / np.sqrt(2)
+        c = np.zeros(n, dtype=np.complex128)
+        for k in range(1, n):
+            c[k] = rho * c[k - 1] + alpha * z[k]
+
+        bw = compute_doppler_bandwidth(c, fs)
+        expected = 2.0 * sigma_D
+        # 30% tolerance: measured to 10 (expected) with typical resolution
+        # and light smoothing lands within 15% in most seeds.
+        assert abs(bw - expected) < 0.30 * expected, (
+            f"AR(1) Lorentzian -3dB two-sided BW = {bw:.3f}, expected {expected:.3f}"
+        )
+
+
+class TestVHPythonFallbackCorrelationRouting:
+    """Guards the fix to _process_mode_python: it must route to exp_C_state /
+    exp_rho when correlation_type is EXPONENTIAL, not always use gauss_*.
+
+    Prior behavior: always used gauss_rho (which at practical sample rates
+    is 1 - epsilon), producing essentially frozen fading. Detected by an
+    almost-deterministic envelope on a CW input.
+    """
+
+    def test_python_fallback_uses_exp_state_for_exp_correlation(self):
+        import hfpathsim.core.vogler_hoffmeyer as vh_module
+
+        # Force the Python fallback code path even when numba is available.
+        saved = vh_module.NUMBA_AVAILABLE
+        vh_module.NUMBA_AVAILABLE = False
+        try:
+            mode = ModeParameters(
+                name="python_fallback_probe",
+                amplitude=1.0,
+                floor_amplitude=0.01,
+                tau_L=0.0,
+                sigma_tau=1000.0,
+                sigma_c=500.0,
+                sigma_D=1.0,
+                doppler_shift=0.0,
+                correlation_type=CorrelationType.EXPONENTIAL,
+            )
+            cfg = VoglerHoffmeyerConfig(
+                sample_rate=SAMPLE_RATE_HZ, modes=[mode], use_gpu=False,
+            )
+            ch = VoglerHoffmeyerChannel(cfg)
+
+            n = int(5.0 * SAMPLE_RATE_HZ)
+            cw = np.ones(n, dtype=np.complex128)
+            y = ch.process(cw)
+
+            # Rayleigh envelope: RMS clearly larger than mean (ratio ~0.886).
+            env = np.abs(y)
+            mean_env = float(np.mean(env))
+            rms_env = float(np.sqrt(np.mean(env**2)))
+            ratio = mean_env / rms_env if rms_env > 0 else 0.0
+
+            assert ratio < 0.98, (
+                f"Envelope ratio {ratio:.4f} too close to 1 — Python fallback "
+                f"appears to be using gauss_rho (frozen fading), not exp_rho."
+            )
+            assert ratio > 0.75, (
+                f"Envelope ratio {ratio:.4f} below Rayleigh lower bound; "
+                f"process may be broken in a different way."
+            )
+        finally:
+            vh_module.NUMBA_AVAILABLE = saved
 
 
 class TestVHSigmaFMapping:
