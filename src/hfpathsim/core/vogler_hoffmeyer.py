@@ -620,21 +620,56 @@ class VoglerHoffmeyerChannel:
         b = mode.doppler_delay_coupling
         doppler_hz = (mode.doppler_shift + b * (tau_c - delay_us)).astype(np.float32)
 
-        # Decimate taps if more than GPU limit
+        # Decimate taps if more than GPU limit. This preserves total power but
+        # changes the delay profile shape (and therefore RMS delay spread), so
+        # warn the caller — silent decimation was flagged by the audit.
         n_taps = len(delays)
         if n_taps > GPU_MAX_TAPS:
-            # Select evenly spaced subset of taps
+            import warnings
+
+            # Measure the RMS delay spread before/after decimation so the
+            # warning is informative, not just a threshold trigger.
+            pdp_full = (T * mode_data['norm_factor']) ** 2
+            grid_us_full = delay_us
+            if pdp_full.sum() > 0:
+                mean_full = float(np.sum(grid_us_full * pdp_full) / pdp_full.sum())
+                rms_full = float(np.sqrt(
+                    np.sum((grid_us_full - mean_full) ** 2 * pdp_full) / pdp_full.sum()
+                ))
+            else:
+                rms_full = 0.0
+
             indices = np.linspace(0, n_taps - 1, GPU_MAX_TAPS, dtype=int)
             delays = delays[indices]
             amplitudes = amplitudes[indices]
             doppler_hz = doppler_hz[indices]
+            grid_us_dec = delay_us[indices]
 
-            # Re-normalize amplitudes to preserve power
-            amp_sum_sq_original = np.sum((T * mode_data['norm_factor'])**2)
-            amp_sum_sq_new = np.sum(amplitudes**2)
+            # Rescale to preserve total power (does not preserve RMS spread).
+            amp_sum_sq_original = float(np.sum(pdp_full))
+            amp_sum_sq_new = float(np.sum(amplitudes.astype(np.float64) ** 2))
             if amp_sum_sq_new > 0:
                 scale = np.sqrt(amp_sum_sq_original / amp_sum_sq_new)
                 amplitudes *= scale
+
+            pdp_dec = amplitudes.astype(np.float64) ** 2
+            if pdp_dec.sum() > 0:
+                mean_dec = float(np.sum(grid_us_dec * pdp_dec) / pdp_dec.sum())
+                rms_dec = float(np.sqrt(
+                    np.sum((grid_us_dec - mean_dec) ** 2 * pdp_dec) / pdp_dec.sum()
+                ))
+            else:
+                rms_dec = 0.0
+
+            warnings.warn(
+                f"VoglerHoffmeyer GPU tap decimation: {n_taps} taps -> "
+                f"{GPU_MAX_TAPS} (kernel limit). Total power preserved, but "
+                f"RMS delay spread changed from {rms_full:.2f} us to "
+                f"{rms_dec:.2f} us (factor {rms_dec / rms_full if rms_full > 0 else float('nan'):.3f}). "
+                f"Reduce sigma_tau or raise GPU_MAX_TAPS if this matters.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
         # Configure the GPU processor
         processor.configure_taps(delays, amplitudes, doppler_hz)
@@ -685,15 +720,23 @@ class VoglerHoffmeyerChannel:
     def _compute_sigma_f(self, mode: ModeParameters) -> float:
         """Compute sigma_f spectral width parameter for correlation factor C(t).
 
-        sigma_f controls the fading rate through the AR(1) coefficient:
-        - Gaussian: rho = exp(-pi*(sigma_f*delta_t)^2)
-        - Exponential: rho = exp(-2*pi*sigma_f*delta_t)
+        Exponential branch (physically correct for AR(1)):
+            Target ACF:  R(tau) = exp(-|tau|/Tc)  with  Tc = 1/(2*pi*sigma_D)
+            AR(1) form:  rho = exp(-2*pi*sigma_f*delta_t)
+            R(k*delta_t) = rho^k = exp(-2*pi*sigma_f*|tau|)
+            Matching:    sigma_f = sigma_D
+        The previous 2*pi*sigma_D value gave Tc_effective = 1/(4*pi^2*sigma_D),
+        i.e. ~6.28x too short. Envelope-ratio tests did not catch it because
+        any steady-state AR(1) with 0 < rho < 1 yields a Rayleigh envelope.
 
-        For proper Rayleigh fading statistics, sigma_f should be based on
-        the Doppler spread sigma_D. The relationship depends on the Doppler
-        spectrum shape:
-        - Gaussian spectrum: sigma_f = sigma_D (direct mapping)
-        - Exponential spectrum: sigma_f = 2*pi*sigma_D (to match fading rate)
+        Gaussian branch (first-lag match only — KNOWN LIMITATION):
+            The recursion rho = exp(-pi*(sigma_f*delta_t)^2) with sigma_f =
+            sigma_D matches a Gaussian ACF value only at lag delta_t. For
+            k > 1 the AR(1) produces exponential (Lorentzian-spectrum)
+            behavior, not Gaussian. At practical sample rates this makes the
+            effective coherence time depend on delta_t and be much longer
+            than the exponential branch. Callers requiring a true Gaussian
+            ACF should use FIR shaping (see watterson.py::_create_doppler_filter).
         """
         sigma_D = mode.sigma_D
 
@@ -701,13 +744,10 @@ class VoglerHoffmeyerChannel:
             return 1.0
 
         if mode.correlation_type == CorrelationType.GAUSSIAN:
-            # Gaussian Doppler spectrum: direct mapping
             sigma_f = sigma_D
         else:
-            # Exponential Doppler spectrum: scale for proper fading rate
-            # The exponential autocorrelation R(τ) = exp(-|τ|/τc) has
-            # coherence time τc = 1/(2*pi*fd) for Doppler spread fd
-            sigma_f = 2 * np.pi * sigma_D
+            # Exponential ACF, coherence time Tc = 1/(2*pi*sigma_D).
+            sigma_f = sigma_D
 
         return max(sigma_f, 1e-6)
 

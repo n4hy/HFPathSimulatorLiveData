@@ -57,3 +57,6 @@ data/
 .DS_Store
 Thumbs.db
 OPTIMIZATION_PLAN.md
+
+# Claude Code local config
+.claude/

@@ -54,6 +54,15 @@ RUN if [ -f "CMakeLists.txt" ]; then \
 # Install Python package
 RUN pip install --no-cache-dir ".[api,gpu]"
 
+# Stage the built CUDA .so files into a fixed directory so the runtime stage
+# can COPY the directory unconditionally. The previous approach used shell
+# redirection inside a COPY directive (2>/dev/null || true), which is not valid
+# Dockerfile syntax and either failed the build or shipped an empty GPU dir
+# depending on BuildKit version.
+RUN mkdir -p /gpu_stage && \
+    ( ls /build/build/*.so >/dev/null 2>&1 && cp /build/build/*.so /gpu_stage/ ) || \
+    echo "no .so artifacts to stage"
+
 # ==============================================================================
 # Stage 2: Runtime Image
 # ==============================================================================
@@ -82,8 +91,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Copy built CUDA module if exists
-COPY --from=builder /build/build/*.so /opt/venv/lib/python3.11/site-packages/hfpathsim/gpu/ 2>/dev/null || true
+# Copy built CUDA module .so files (staged in builder as /gpu_stage). The dir
+# always exists — it is empty if the CUDA build produced no .so, so this COPY
+# is unconditionally valid.
+COPY --from=builder /gpu_stage/ /opt/venv/lib/python3.11/site-packages/hfpathsim/gpu/
 
 # Create non-root user
 RUN useradd --create-home --shell /bin/bash hfpathsim

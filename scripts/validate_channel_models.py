@@ -39,6 +39,55 @@ from hfpathsim.core.vogler_hoffmeyer import (
 from hfpathsim.core.watterson import WattersonChannel, WattersonConfig, WattersonTap
 
 
+def _calibrate_sigma_tau_us(
+    target_rms_ms: float,
+    sample_rate: float,
+    corr_type: CorrelationType,
+    doppler_hz: float,
+    spread_f_enabled: bool = False,
+    sigma_c_ratio: float = 0.5,
+    reference_sigma_tau_us: float = 1000.0,
+) -> float:
+    """Solve for the ModeParameters.sigma_tau that yields the requested RMS delay spread.
+
+    Derivation:
+      The VH power delay profile P(tau) = |T(tau)|^2 is set by the shape
+      parameters (alpha_high, beta_high) which depend only on the ratio
+      y2 = sigma_tau / sigma_c. Holding sigma_c = sigma_c_ratio * sigma_tau
+      fixes y2, so the profile shape is invariant under a rescaling of
+      sigma_tau; only the delay axis stretches. Hence RMS_output scales
+      linearly with sigma_tau (up to sample-grid discretization).
+
+    So: build the channel once at reference_sigma_tau_us, measure the RMS,
+    and rescale exactly. Replaces the previous empirical factor of 6829.
+    """
+    ref_sigma_tau = reference_sigma_tau_us
+    probe_mode = ModeParameters(
+        name="calibration_probe",
+        amplitude=1.0,
+        floor_amplitude=0.01,
+        tau_L=0.0,
+        sigma_tau=ref_sigma_tau,
+        sigma_c=ref_sigma_tau * sigma_c_ratio,
+        sigma_D=doppler_hz,
+        doppler_shift=0.0,
+        correlation_type=corr_type,
+    )
+    probe_config = VoglerHoffmeyerConfig(
+        sample_rate=sample_rate,
+        modes=[probe_mode],
+        spread_f_enabled=spread_f_enabled,
+    )
+    probe = VoglerHoffmeyerChannel(probe_config)
+    ir_len = max(1024, int(ref_sigma_tau * 1e-6 * sample_rate * 5) + 100)
+    h = probe.get_impulse_response(num_samples=ir_len)
+    measured = compute_delay_spread(h, sample_rate).rms_delay_spread_ms
+    if measured <= 0:
+        # Discretization killed the delay profile; fall back to sample-period floor.
+        return max(target_rms_ms * 2000.0, 1.0 / sample_rate * 1e6 * 2.0)
+    return ref_sigma_tau * (target_rms_ms / measured)
+
+
 @dataclass
 class ValidationSummary:
     """Summary of validation results."""
@@ -63,19 +112,25 @@ def create_vh_config_for_reference(ref: ReferenceDataset, sample_rate: float = 4
     else:
         corr_type = CorrelationType.GAUSSIAN
 
-    # Convert RMS delay spread (ms) to sigma_tau (us)
-    # Empirically calibrated: sigma_tau_us ≈ RMS_ms * 6829
-    # This accounts for the delay profile shape and tap distribution
-    sigma_tau_us = ref.delay_spread_ms * 6829.0
+    # Solve for sigma_tau_us so the model actually produces the target RMS
+    # delay spread. Replaces the previous empirical factor (6829) that
+    # violated the no-fudge-factors rule.
+    spread_f = (ref.condition.value == 'spread_f')
+    sigma_tau_us = _calibrate_sigma_tau_us(
+        target_rms_ms=ref.delay_spread_ms,
+        sample_rate=sample_rate,
+        corr_type=corr_type,
+        doppler_hz=ref.doppler_spread_hz,
+        spread_f_enabled=spread_f,
+    )
 
-    # Create mode parameters to match reference
     mode = ModeParameters(
         name=f"{ref.name} mode",
         amplitude=1.0,
         floor_amplitude=0.01,
         tau_L=0.0,
         sigma_tau=sigma_tau_us,
-        sigma_c=sigma_tau_us / 2.0,    # Carrier at ~half spread
+        sigma_c=sigma_tau_us / 2.0,    # Carrier at half spread (y2 = 2)
         sigma_D=ref.doppler_spread_hz,
         doppler_shift=0.0,
         correlation_type=corr_type,
@@ -84,24 +139,25 @@ def create_vh_config_for_reference(ref: ReferenceDataset, sample_rate: float = 4
     return VoglerHoffmeyerConfig(
         sample_rate=sample_rate,
         modes=[mode],
-        spread_f_enabled=(ref.condition.value == 'spread_f'),
+        spread_f_enabled=spread_f,
     )
 
 
 def create_watterson_config_for_reference(ref: ReferenceDataset, sample_rate: float = 48000.0) -> WattersonConfig:
     """Create Watterson config matching reference dataset parameters.
 
-    For RMS delay spread D with N equal-power taps uniformly distributed
-    from 0 to τ_max, the relationship is:
-        RMS = τ_max * sqrt((N²-1)/(12*N²)) for N taps
+    For N equal-power taps placed at k*tau_max/(N-1) for k = 0, ..., N-1
+    (endpoints included), the RMS delay spread is:
+        RMS = tau_max * sqrt((N+1) / (12*(N-1)))
 
-    For 2 equal-power taps at 0 and τ_max:
-        RMS = τ_max / 2
-        So τ_max = 2 * D
+    Specific cases:
+      N = 2, taps at (0, tau_max):              RMS = tau_max / 2
+      N = 3, taps at (0, tau_max/2, tau_max):   RMS = tau_max / sqrt(6) ~ 0.408*tau_max
+      N -> infty (continuous uniform):          RMS -> tau_max / sqrt(12)
 
-    For 3 equal-power taps at 0, τ_max/2, τ_max:
-        RMS = τ_max / sqrt(6) ≈ 0.408 * τ_max
-        So τ_max = D * sqrt(6) ≈ 2.45 * D
+    Inversion:
+      N <= 2: tau_max = 2 * D
+      N == 3: tau_max = D * sqrt(6) ~ 2.449 * D
     """
     taps = []
     target_rms = ref.delay_spread_ms
@@ -147,18 +203,24 @@ def validate_channel(
     channel.reset()
     output_cw = channel.process(cw)
 
-    # Get envelope and downsample to fading rate
-    envelope = np.abs(output_cw)
-    # Sample at rate appropriate for Doppler spread (10x Doppler minimum)
-    target_rate = max(60, 10 * ref.doppler_spread_hz)
+    # Downsample the complex fading process (CW output IS the channel gain g(t))
+    # to a rate ~10x the Doppler spread, both for envelope statistics and for
+    # the Doppler PSD measurement below.
+    target_rate = max(60.0, 10.0 * ref.doppler_spread_hz)
     downsample_factor = max(1, int(sample_rate / target_rate))
-    envelope_ds = envelope[::downsample_factor]
+    fading_ds = output_cw[::downsample_factor]
+    fading_ds_rate = sample_rate / downsample_factor
+    envelope_ds = np.abs(fading_ds)
 
-    # Compute envelope ratio (Mean/RMS) - should be ~0.886 for Rayleigh
-    # This is a robust measure that doesn't depend on sample size like K-S test
+    # Envelope ratio (Mean/RMS) — Rayleigh reference = sqrt(pi/4) ≈ 0.886.
     mean_env = np.mean(envelope_ds)
     rms_env = np.sqrt(np.mean(envelope_ds**2))
     envelope_ratio = mean_env / rms_env if rms_env > 0 else 0.0
+
+    # Measure Doppler spread from the fading process itself. Previously the
+    # validator reported doppler_error = 0 by construction — see audit.
+    doppler_result = compute_doppler_spread(fading_ds, fading_ds_rate)
+    doppler_measured_hz = doppler_result.rms_doppler_spread_hz
 
     # For delay spread, use channel's impulse response method
     # Ensure IR length can capture maximum expected delay (3x RMS spread typical)
@@ -183,23 +245,27 @@ def validate_channel(
 
     delay_result = compute_delay_spread(h, sample_rate)
 
-    # For Doppler, use the configured value
-    doppler_result_rms = ref.doppler_spread_hz
+    # Errors relative to reference (real measurements now — no tautology)
+    delay_error = (
+        abs(delay_result.rms_delay_spread_ms - ref.delay_spread_ms) / ref.delay_spread_ms * 100
+        if ref.delay_spread_ms > 0 else 0.0
+    )
+    doppler_error = (
+        abs(doppler_measured_hz - ref.doppler_spread_hz) / ref.doppler_spread_hz * 100
+        if ref.doppler_spread_hz > 0 else 0.0
+    )
 
-    # Compute errors
-    delay_error = abs(delay_result.rms_delay_spread_ms - ref.delay_spread_ms) / ref.delay_spread_ms * 100 if ref.delay_spread_ms > 0 else 0
-    doppler_error = 0.0
-
-    # Envelope ratio error (should be close to 0.886 for Rayleigh)
-    rayleigh_ratio = 0.886  # sqrt(pi/4)
+    # Envelope ratio error (Rayleigh = sqrt(pi/4) ≈ 0.886)
+    rayleigh_ratio = np.sqrt(np.pi / 4.0)
     ratio_error = abs(envelope_ratio - rayleigh_ratio) / rayleigh_ratio * 100
 
-    # Overall pass criteria:
-    # - Delay spread within 50%
-    # - Envelope ratio within 15% of Rayleigh (0.886)
+    # Pass criteria: delay within 50%, Doppler within 100%, envelope within 15%
+    # (Doppler tolerance is loose because AR(1)-based fading generators
+    # approximate the target spectrum; tighten once shaping filters are used.)
     overall_pass = (
-        delay_error < 50 and
-        ratio_error < 15
+        delay_error < 50.0
+        and doppler_error < 100.0
+        and ratio_error < 15.0
     )
 
     return ValidationSummary(
@@ -208,7 +274,7 @@ def validate_channel(
         delay_spread_measured=delay_result.rms_delay_spread_ms,
         delay_spread_reference=ref.delay_spread_ms,
         delay_spread_error_pct=delay_error,
-        doppler_spread_measured=doppler_result_rms,
+        doppler_spread_measured=doppler_measured_hz,
         doppler_spread_reference=ref.doppler_spread_hz,
         doppler_spread_error_pct=doppler_error,
         envelope_ratio=envelope_ratio,

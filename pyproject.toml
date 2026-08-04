@@ -90,9 +90,15 @@ matlab = [
     "scipy>=1.12",
 ]
 
+# HDF5 recording (core/recording.py imports h5py)
+recording = [
+    "h5py>=3.10",
+]
+
 # Development dependencies
 dev = [
     "pytest>=7.0",
+    "pytest-cov>=4.0",
     "pytest-qt>=4.2",
     "pytest-asyncio>=0.21",
     "httpx>=0.25",
@@ -110,7 +116,7 @@ docs = [
 
 # All optional dependencies (except dev/docs)
 all = [
-    "hfpathsim[gui,gpu,api,sdr,iri,audio,matlab]",
+    "hfpathsim[gui,gpu,api,sdr,iri,audio,matlab,recording]",
 ]
 
 [project.scripts]

@@ -1,50 +1,48 @@
-# HF Path Simulator - Requirements
-# Install with: pip install -r requirements.txt
-# Or for full install: pip install -e ".[all]"
+# HF Path Simulator — install pointer
+#
+# The canonical dependency graph lives in pyproject.toml. This file exists as
+# a convenience for reproducible CI installs and mirrors the pinned versions
+# there. For most workflows prefer:
+#
+#     pip install -e ".[all]"          # runtime + all optional integrations
+#     pip install -e ".[dev]"          # test tooling
+#     pip install -e ".[docs]"         # mkdocs build
+#
+# When adding or removing a dependency, edit pyproject.toml first and update
+# this file only if the change is actually needed for the plain `pip install
+# -r requirements.txt` path.
 
-# Core dependencies (required)
+# Runtime (matches [project.dependencies])
 numpy>=1.26
 scipy>=1.12
 pyzmq>=25.0
 
-# GUI dependencies (desktop application)
+# Recording (matches [project.optional-dependencies].recording)
+h5py>=3.10
+
+# GUI (matches .gui)
 PyQt6>=6.6
 pyqtgraph>=0.13
 
-# Audio output
+# Audio (matches .audio)
 sounddevice>=0.4.0
 
-# GPU acceleration (requires CUDA 12.x)
+# GPU (matches .gpu; CUDA 12.x)
 cupy-cuda12x>=13.0
 pybind11>=2.12
 
-# REST API server
+# REST API (matches .api)
 fastapi>=0.109
-uvicorn>=0.27
-httpx>=0.25
+uvicorn[standard]>=0.27
+websockets>=12.0
 pydantic>=2.0
+httpx>=0.25
 
-# HDF5 support
-h5py>=3.10
-
-# Optional: SDR hardware support
-# soapysdr
-
-# Optional: IRI-2016 ionospheric model
-# iri2016
-
-# Development dependencies (testing)
+# Dev tooling (matches .dev)
 pytest>=7.0
 pytest-cov>=4.0
 pytest-qt>=4.2
 pytest-asyncio>=0.21
-
-# Code quality
 ruff>=0.1
 mypy>=1.5
 pre-commit>=3.0
-
-# Documentation
-# mkdocs>=1.5
-# mkdocs-material>=9.0
-# mkdocstrings[python]>=0.24

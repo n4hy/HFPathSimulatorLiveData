@@ -104,7 +104,7 @@ def compute_d_from_qp(f_c_layer: float, f_carrier: float,
     Example:
         >>> d = compute_d_from_qp(8e6, 15e6, y_m=100e3, phi_inc=0.35)
         >>> print(f"Dispersion: {d:.1f} us/MHz")
-        Dispersion: 24.7 us/MHz
+        Dispersion: 21.2 us/MHz
     """
     # Validate inputs
     if f_carrier <= f_c_layer:

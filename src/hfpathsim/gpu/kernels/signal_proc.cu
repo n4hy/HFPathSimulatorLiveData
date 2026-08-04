@@ -471,44 +471,35 @@ int process_overlap_save(
     if (grid_blocks < 1) grid_blocks = 1;
     float scale = 1.0f / block_size;
 
-    // Process blocks
+    // Process blocks. Consecutive kernel launches on the default (null) stream
+    // are already serialized against each other; per-launch cudaDeviceSynchronize
+    // only forces a host<->device round-trip that destroys throughput. One
+    // synchronize before the cudaMemcpy below is sufficient for correctness.
     for (int b = 0; b < n_blocks; b++) {
         int input_offset = b * output_size;
 
-        // Prepare input block with overlap
         prepare_input_block<<<grid_blocks, threads>>>(
             input_dev, state->input_block, input_offset, input_len, block_size, overlap
         );
-        cudaDeviceSynchronize();
 
-        // Forward FFT
         cufftExecC2C(state->fft_plan, state->input_block, state->X_freq, CUFFT_FORWARD);
-        cudaDeviceSynchronize();
 
-        // Complex multiply with transfer function
         complex_multiply<<<grid_blocks, threads>>>(
             state->X_freq, state->H_freq, state->Y_freq, block_size
         );
-        cudaDeviceSynchronize();
 
-        // Inverse FFT
         cufftExecC2C(state->ifft_plan, state->Y_freq, state->output_block, CUFFT_INVERSE);
-        cudaDeviceSynchronize();
 
-        // Scale IFFT output
         scale_ifft_output<<<grid_blocks, threads>>>(
             state->output_block, scale, block_size
         );
-        cudaDeviceSynchronize();
 
-        // Extract valid output
         extract_output_block<<<grid_blocks, threads>>>(
             state->output_block, output_dev, b * output_size, overlap, output_size
         );
-        cudaDeviceSynchronize();
     }
 
-    // Copy output back
+    // Copy output back (cudaMemcpy on default stream implicitly synchronizes)
     cufftComplex* output_temp = new cufftComplex[total_output];
     cudaMemcpy(output_temp, output_dev, total_output * sizeof(cufftComplex), cudaMemcpyDeviceToHost);
 
