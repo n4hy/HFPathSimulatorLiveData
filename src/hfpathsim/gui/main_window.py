@@ -977,10 +977,11 @@ class MainWindow(QMainWindow):
         input_rate = self._input_source.sample_rate
         n_samples = len(samples)
 
-        # RF processing parameters
-        rf_rate = 1_000_000  # 1 MHz RF sample rate
-        upsample_factor = int(rf_rate / input_rate)  # 125 for 8kHz -> 1MHz
-        rf_carrier_hz = 100_000  # 100 kHz carrier within the 1 MHz band
+        # RF processing parameters — must be > input_rate so the anti-alias
+        # cutoff normalizes to < 1.  Use 4× input_rate with a 1 MHz floor.
+        rf_rate = max(1_000_000, int(input_rate) * 4)
+        upsample_factor = int(rf_rate / input_rate)
+        rf_carrier_hz = 100_000  # 100 kHz carrier within the RF band
 
         # Initialize RF processing state if needed
         if not hasattr(self, '_vogler_rf_state'):
@@ -1177,10 +1178,11 @@ class MainWindow(QMainWindow):
         input_rate = self._input_source.sample_rate
         n_samples = len(samples)
 
-        # RF processing parameters
-        rf_rate = 1_000_000  # 1 MHz RF sample rate
-        upsample_factor = int(rf_rate / input_rate)  # 125 for 8kHz -> 1MHz
-        rf_carrier_hz = 100_000  # 100 kHz carrier within the 1 MHz band
+        # RF processing parameters — must be > input_rate so the anti-alias
+        # cutoff normalizes to < 1.  Use 4× input_rate with a 1 MHz floor.
+        rf_rate = max(1_000_000, int(input_rate) * 4)
+        upsample_factor = int(rf_rate / input_rate)
+        rf_carrier_hz = 100_000  # 100 kHz carrier within the RF band
 
         # Initialize RF processing state if needed
         if not hasattr(self, '_vh_rf_state'):
@@ -1352,8 +1354,9 @@ class MainWindow(QMainWindow):
         if self._output_enabled and self._output_sink and self._output_sink.is_open:
             written = self._output_sink.write(channel_output)
             if self._block_count <= 5:
-                print(f"  Audio write: {written}/{len(channel_output)} samples, "
-                      f"buffer_fill={self._output_sink.buffer_fill:.1f}%")
+                fill = getattr(self._output_sink, 'buffer_fill', None)
+                fill_str = f", buffer_fill={fill:.1f}%" if fill is not None else ""
+                print(f"  Audio write: {written}/{len(channel_output)} samples{fill_str}")
         else:
             # Debug: show why output isn't working
             if not hasattr(self, '_debug_output_shown'):

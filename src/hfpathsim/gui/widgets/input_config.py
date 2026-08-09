@@ -117,6 +117,7 @@ class InputConfigWidget(QWidget):
         # Sample rate (for raw files)
         layout.addWidget(QLabel("Sample Rate:"), 1, 0)
         self._file_rate = QDoubleSpinBox()
+        self._file_rate.setDecimals(3)
         self._file_rate.setRange(0.001, 100.0)
         self._file_rate.setValue(2.0)
         self._file_rate.setSuffix(" Msps")
